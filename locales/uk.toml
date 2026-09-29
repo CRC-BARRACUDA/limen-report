@@ -1,0 +1,9 @@
+# Ukrainian card text for the module manager.
+#
+# Read by the host, not by the module: `[module] title` and `description`
+# are what the card and the tab show when the UI is in Ukrainian. English
+# falls back to `limen.toml`, so there is no en.toml beside this.
+
+[module]
+title = "Звіти"
+description = "Створює звіти для інших модулів — фірмовий PDF, а також Markdown, HTML і CSV."

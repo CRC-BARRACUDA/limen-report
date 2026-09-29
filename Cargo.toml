@@ -1,0 +1,18 @@
+# Standalone package (it lives inside the Limen repo tree but is its own module).
+[workspace]
+
+[package]
+name = "report"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Turn report specs into in-app views or exported Markdown/HTML/CSV documents."
+repository = "https://github.com/CRC-BARRACUDA/limen-report"
+
+[lib]
+name = "report"
+path = "lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+limen-sdk-rust = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
