@@ -163,7 +163,10 @@ fn body_bottom() -> f32 {
 /// monospaced — no measuring loop, and no cell that overflows by one glyph.
 fn room(font: &Font, size: f32, width: f32) -> usize {
     let per = font.width("0", size).max(0.01);
-    (width / per).floor().max(1.0) as usize
+    // The hundredth is not slack, it is arithmetic: a column given exactly
+    // thirteen characters computes 12.999… and wraps the thirteenth onto a line
+    // of its own.
+    (width / per + 0.01).floor().max(1.0) as usize
 }
 
 /// A cell's text as the lines it takes, wrapped to `width`.
@@ -385,19 +388,35 @@ fn table(
     cols: &[String],
     rows: &[Vec<String>],
 ) -> f32 {
-    let size = 7.0;
-    let row_h = 13.0;
     let inner = PAGE_W - 2.0 * MARGIN;
-    // Columns share the width in proportion to the widest thing in each, so a
-    // column of dates does not get the same space as one of file paths.
-    let widths = column_widths(cols, rows, inner);
+    // Set to fit. A six-column table of paths does not go on an A4 page at
+    // seven points, and the alternative to smaller type is wrapping every cell
+    // in it — which turns a row of six short values into a row four lines
+    // deep. Down to five and a half points, which is small and still read.
+    let size = [7.0f32, 6.5, 6.0, 5.5]
+        .into_iter()
+        .find(|s| demand(font, cols, rows, *s) <= inner)
+        .unwrap_or(5.5);
+    let row_h = size + 6.0;
+    let widths = column_widths(font, cols, rows, inner, size);
 
     let header = |page: &mut Page, y: f32| {
         page.rect(MARGIN, y, inner, row_h, chrome.p.head_bg);
         let mut x = MARGIN;
         for (i, c) in cols.iter().enumerate() {
             let w = widths[i];
-            page.text(font, 6.5, x + 4.0, y + 9.0, chrome.p.dim, &fit(font, &c.to_uppercase(), 6.5, w - 8.0));
+            // The same size as the body, because the columns were measured at
+            // it: set larger, a seven-character heading no longer fits the
+            // seven characters of room it was given, and `ENABLED` prints as
+            // `ENAB…` over a column of `yes`.
+            page.text(
+                font,
+                size,
+                x + 4.0,
+                y + 9.0,
+                chrome.p.dim,
+                &fit(font, &c.to_uppercase(), size, w - 8.0),
+            );
             x += w;
         }
         page.line(MARGIN, y + row_h, PAGE_W - MARGIN, 0.5, chrome.p.rule);
@@ -450,13 +469,16 @@ fn table(
     y
 }
 
-/// Share `inner` points between the columns, in proportion to their content.
-///
-/// Measured in characters, which a monospaced face makes exact, and clamped so
-/// one very long cell cannot squeeze every other column down to nothing.
-fn column_widths(cols: &[String], rows: &[Vec<String>], inner: f32) -> Vec<f32> {
+/// The padding inside a cell: the text is drawn 4 points in from each edge, so
+/// a column needs that much more than the text in it.
+const CELL_PAD: f32 = 8.0;
+
+/// What each column would like, in points — heading or widest value, whichever
+/// is longer, capped so one column of paths cannot ask for the page twice over.
+fn wants(font: &Font, cols: &[String], rows: &[Vec<String>], size: f32) -> Vec<f32> {
+    let per = font.width("0", size).max(0.01);
     let n = cols.len().max(rows.first().map_or(0, Vec::len)).max(1);
-    let mut want: Vec<f32> = (0..n)
+    (0..n)
         .map(|i| {
             let head = cols.get(i).map_or(0, |c| c.chars().count());
             let widest = rows
@@ -465,17 +487,77 @@ fn column_widths(cols: &[String], rows: &[Vec<String>], inner: f32) -> Vec<f32> 
                 .map(|c| c.chars().count())
                 .max()
                 .unwrap_or(0);
-            head.max(widest).clamp(6, 44) as f32
+            head.max(widest.min(44)).max(4) as f32 * per + CELL_PAD
+        })
+        .collect()
+}
+
+/// What the table would take if every column had what it asked for.
+fn demand(font: &Font, cols: &[String], rows: &[Vec<String>], size: f32) -> f32 {
+    wants(font, cols, rows, size).iter().sum()
+}
+
+/// Share `inner` points between the columns.
+///
+/// A column gets its **heading** first, whatever else happens — a table whose
+/// headings read `S…` and `EN…` is one nobody can say what they are looking at
+/// in — and a column of *short* values gets those in full as well. What is left
+/// over is shared in proportion to what each column's values asked for, so a
+/// column of paths grows and a column of `yes`/`no` does not.
+///
+/// Sharing the whole width in proportion — which this did — gave a six-character
+/// column four characters of room, and `system` came out as three lines of two
+/// letters.
+fn column_widths(
+    font: &Font,
+    cols: &[String],
+    rows: &[Vec<String>],
+    inner: f32,
+    size: f32,
+) -> Vec<f32> {
+    let per = font.width("0", size).max(0.01);
+    let want = wants(font, cols, rows, size);
+    let n = want.len();
+
+    // `system` broken across three lines to save four characters is the whole
+    // of what was wrong here: a column of paths can wrap, a column of `system`
+    // cannot usefully.
+    const SHORT: f32 = 16.0;
+    let floor: Vec<f32> = (0..n)
+        .map(|i| {
+            let head = cols.get(i).map_or(0, |c| c.chars().count()) as f32 * per + CELL_PAD;
+            let short = want[i].min(SHORT * per + CELL_PAD);
+            head.max(short)
         })
         .collect();
-    let total: f32 = want.iter().sum();
-    if total <= 0.0 {
-        return vec![inner / n as f32; n];
+
+    let needed: f32 = floor.iter().sum();
+    if needed >= inner {
+        // More heading than page. Nothing can be guaranteed, so share what
+        // there is and let the wrapping do what it must.
+        let total: f32 = want.iter().sum::<f32>().max(1.0);
+        return want.iter().map(|w| w / total * inner).collect();
     }
-    for w in want.iter_mut() {
-        *w = *w / total * inner;
+
+    let extra: Vec<f32> = (0..n).map(|i| (want[i] - floor[i]).max(0.0)).collect();
+    let asked: f32 = extra.iter().sum();
+    let slack = inner - needed;
+    if asked <= 0.0 {
+        // Every column has all it asked for and there is room to spare: spread
+        // it evenly rather than leaving the table short of the margin.
+        return floor.iter().map(|f| f + slack / n as f32).collect();
     }
-    want
+    let share = (slack / asked).min(1.0);
+    let mut out: Vec<f32> = (0..n).map(|i| floor[i] + extra[i] * share).collect();
+    // Anything still unspent goes to the column that asked for most, which is
+    // the one that will have wrapped if anything did.
+    let spent: f32 = out.iter().sum();
+    if inner - spent > 1.0 {
+        if let Some(widest) = (0..n).max_by(|a, b| extra[*a].total_cmp(&extra[*b])) {
+            out[widest] += inner - spent;
+        }
+    }
+    out
 }
 
 /// Tell the document every character it is going to draw.
