@@ -4,7 +4,7 @@ A [Limen](https://github.com/CRC-BARRACUDA/Limen) module that turns a **report
 spec** into an in-app view or an exported document. It provides the
 `report.build` capability and is an *optional* companion for data modules: they
 hand it a spec, it renders tables + charts in a new tab, or writes a document
-and opens it — a **branded PDF**, or Markdown / HTML / CSV.
+and saves it where you choose — a **branded PDF**, or the same report as an HTML page.
 
 Because it's optional, a data module only shows its "Make Report" action while
 this module is installed (discovered via `host.capabilities()`). Install both,
@@ -71,19 +71,20 @@ serial out of is a picture of a report.
   "title": "Device Report",
   "subtitle": "2026-07-27",
   "theme": "light",
-  "format": "view" | "pdf" | "markdown" | "html" | "csv",
+  "format": "view" | "pdf" | "html",
   "summary": ["77 devices", "66 connected"],
   "charts":  [ { "title": "By category", "data": [ {"label":"usb","value":41} ] } ],
   "sections":[ { "heading": "Connected", "columns": ["A","B"], "rows": [["1","2"]] } ]
 }
 ```
 
-- `theme` is the PDF's ground: `light` (default) or `dark`. Ignored by the
-  other formats, which are text.
-- `format` defaults to **`view`** — returns a Limen view (title, summary, bar
-  charts, tables) that the caller opens in a tab.
-- `markdown` / `html` / `csv` write the document to a temp folder and open it in
-  your default app (returns null).
+- `format` defaults to **`view`** — the preview: a pop-up over the screen that
+  asked for it, holding the report's own content, the number of sheets it comes
+  to, a **Save as** picker (PDF or HTML), a ground for the PDF, and Save.
+- `theme` is the PDF's ground: `light` (default) or `dark`. The page carries its
+  own.
+- `html` writes a self-contained page — one file, styles inside it, nothing
+  fetched — for sending on or pasting into a ticket.
 
 ## Build
 

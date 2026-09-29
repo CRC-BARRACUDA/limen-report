@@ -159,6 +159,45 @@ fn body_bottom() -> f32 {
     PAGE_H - FOOT_H - 8.0
 }
 
+/// How many characters fit in `width` points. Exact, because the face is
+/// monospaced — no measuring loop, and no cell that overflows by one glyph.
+fn room(font: &Font, size: f32, width: f32) -> usize {
+    let per = font.width("0", size).max(0.01);
+    (width / per).floor().max(1.0) as usize
+}
+
+/// A cell's text as the lines it takes, wrapped to `width`.
+///
+/// Wrapped, not cut. A serial number shortened to fit a column cannot be
+/// matched against the drive it came from — which is the only thing it is for —
+/// and a document that quietly drops half of one is evidence of nothing. Broken
+/// at a space where there is one, and through the middle of a word where there
+/// is not: the long values here are identifiers, and they have no spaces at all.
+fn wrap(font: &Font, text: &str, size: f32, width: f32) -> Vec<String> {
+    let room = room(font, size, width);
+    let mut lines: Vec<String> = Vec::new();
+    let mut rest: Vec<char> = text.chars().collect();
+    while rest.len() > room {
+        // A break in the last third of the line reads as a wrap; earlier than
+        // that and the column looks ragged for no reason.
+        let window = &rest[..room];
+        let at = window
+            .iter()
+            .rposition(|c| *c == ' ' || *c == ',')
+            .filter(|i| *i * 3 >= room * 2)
+            .map(|i| i + 1)
+            .unwrap_or(room);
+        lines.push(rest[..at].iter().collect::<String>().trim_end().to_string());
+        rest.drain(..at);
+        // A run of ten lines is a cell nobody reads and a page nobody can use.
+        if lines.len() >= 10 {
+            break;
+        }
+    }
+    lines.push(rest.iter().collect());
+    lines
+}
+
 /// A cell's text, cut to fit `width` points with an ellipsis.
 ///
 /// The face is monospaced, so a column's capacity is exactly a number of
@@ -175,14 +214,24 @@ fn fit(font: &Font, text: &str, size: f32, width: f32) -> String {
     text.chars().take(room - 1).collect::<String>() + "…"
 }
 
+/// A finished document, and how many sheets it came to — which the preview
+/// says out loud, because "this is three pages" changes whether somebody
+/// presses print.
+pub struct Rendered {
+    pub bytes: Vec<u8>,
+    pub pages: usize,
+}
+
 /// Render a spec as a PDF.
-pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Vec<u8> {
+pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
     let title = str_at(spec, "title");
     let title = if title.is_empty() { "Report" } else { title };
     // Light unless asked otherwise: a report is printed more often than it is
     // read on a screen, and a dark page sent to a printer costs a cartridge.
+    // Both the value a module sets and the one the pop-up's dropdown sends:
+    // the choice is made in two places and means the same thing in both.
     let palette = match str_at(spec, "theme") {
-        "dark" => &DARK,
+        "dark" | "Dark" | "Black" => &DARK,
         _ => &LIGHT,
     };
     let chrome = Chrome {
@@ -211,20 +260,52 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Vec<u8> {
         .map(str::to_string)
         .collect();
     if !summary.is_empty() {
-        // Four across, as figures rather than sentences: a summary line is
-        // almost always "name: number", and read by scanning.
+        // A summary line is one of two things, and they do not belong in the
+        // same shape: a figure — "Devices: 78", read by scanning — or a
+        // sentence, like the note a module leaves about what it could not
+        // read. A sentence squeezed into a quarter-width column comes out cut;
+        // a figure given the whole page wastes it.
+        let (figures, lines): (Vec<&String>, Vec<&String>) = summary
+            .iter()
+            .partition(|l| l.contains(':') && l.chars().count() <= 90);
+
         let col = (PAGE_W - 2.0 * MARGIN) / 4.0;
-        for (i, line) in summary.iter().enumerate() {
-            let (label, value) = match line.split_once(':') {
-                Some((l, v)) => (l.trim(), v.trim()),
-                None => ("", line.as_str()),
-            };
-            let x = MARGIN + (i % 4) as f32 * col;
-            let top = y + (i / 4) as f32 * 30.0;
-            page.text(font, 6.5, x, top, chrome.p.dim, &fit(font, &label.to_uppercase(), 6.5, col - 6.0));
-            page.text(font, 11.0, x, top + 13.0, chrome.p.ink, &fit(font, value, 11.0, col - 6.0));
+        // Wrapped first: a row is as tall as the tallest figure in it, and a
+        // processor's name does not fit a quarter of a page on one line.
+        let wrapped: Vec<(String, Vec<String>)> = figures
+            .iter()
+            .map(|line| {
+                let (label, value) = match line.split_once(':') {
+                    Some((l, v)) => (l.trim(), v.trim()),
+                    None => ("", line.as_str()),
+                };
+                let parts = wrap(font, value, 9.5, col - 6.0).into_iter().take(3).collect();
+                (label.to_uppercase(), parts)
+            })
+            .collect();
+
+        for (r, chunk) in wrapped.chunks(4).enumerate() {
+            let tall = chunk.iter().map(|(_, v)| v.len()).max().unwrap_or(1);
+            for (i, (label, value)) in chunk.iter().enumerate() {
+                let x = MARGIN + i as f32 * col;
+                page.text(font, 6.5, x, y, chrome.p.dim, &fit(font, label, 6.5, col - 6.0));
+                for (k, part) in value.iter().enumerate() {
+                    page.text(font, 9.5, x, y + 13.0 + k as f32 * 11.0, chrome.p.ink, part);
+                }
+            }
+            let _ = r;
+            y += 13.0 + tall as f32 * 11.0 + 8.0;
         }
-        y += (summary.len().div_ceil(4)) as f32 * 30.0 + 6.0;
+
+        // Whatever was a sentence, across the page, where it can be read whole.
+        for line in lines {
+            for part in wrap(font, line, 8.0, PAGE_W - 2.0 * MARGIN) {
+                page.text(font, 8.0, MARGIN, y + 8.0, chrome.p.dim, &part);
+                y += 11.0;
+            }
+            y += 4.0;
+        }
+        y += 6.0;
     }
 
     // ---- charts, drawn as bars -------------------------------------------- //
@@ -265,7 +346,10 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Vec<u8> {
         footer(&mut p, font, &chrome, i + 1, total);
         doc.add(p);
     }
-    doc.finish()
+    Rendered {
+        bytes: doc.finish(),
+        pages: total,
+    }
 }
 
 /// A horizontal bar chart. Bars rather than a ring: the data a module hands
@@ -322,7 +406,20 @@ fn table(
 
     let mut y = header(page, start_y);
     for (n, row) in rows.iter().enumerate() {
-        if y + row_h > body_bottom() {
+        // Wrapped first, because how tall this row is depends on it — and so
+        // does whether it fits on what is left of the page.
+        let cells: Vec<Vec<String>> = row
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| {
+                let w = widths.get(i).copied().unwrap_or(60.0);
+                wrap(font, cell, size, w - 8.0)
+            })
+            .collect();
+        let lines = cells.iter().map(Vec::len).max().unwrap_or(1);
+        let height = row_h + (lines - 1) as f32 * (size + 2.0);
+
+        if y + height > body_bottom() {
             pages.push(std::mem::take(page));
             let top = masthead(page, font, chrome);
             y = header(page, top);
@@ -330,16 +427,25 @@ fn table(
         // Every other row on a tint: a report is read across, and a row of
         // twelve short cells is easy to lose your place in.
         if n % 2 == 1 {
-            page.rect(MARGIN, y, inner, row_h, chrome.p.row_bg);
+            page.rect(MARGIN, y, inner, height, chrome.p.row_bg);
         }
         let mut x = MARGIN;
-        for (i, cell) in row.iter().enumerate() {
+        for (i, cell) in cells.iter().enumerate() {
             let w = widths.get(i).copied().unwrap_or(60.0);
-            page.text(font, size, x + 4.0, y + 9.0, chrome.p.ink, &fit(font, cell, size, w - 8.0));
+            for (k, line) in cell.iter().enumerate() {
+                page.text(
+                    font,
+                    size,
+                    x + 4.0,
+                    y + 9.0 + k as f32 * (size + 2.0),
+                    chrome.p.ink,
+                    line,
+                );
+            }
             x += w;
         }
-        page.line(MARGIN, y + row_h, PAGE_W - MARGIN, 0.25, chrome.p.rule);
-        y += row_h;
+        page.line(MARGIN, y + height, PAGE_W - MARGIN, 0.25, chrome.p.rule);
+        y += height;
     }
     y
 }

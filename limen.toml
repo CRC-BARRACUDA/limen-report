@@ -5,12 +5,14 @@ version = "0.2.0"
 language = "native"
 entry = "report"
 abi = "native"
-description = "Generate reports for other modules — a branded PDF, or Markdown, HTML and CSV."
+description = "Generate reports for other modules — a branded PDF, or the same report as a page."
 repo = "CRC-BARRACUDA/limen-report"
 
 [provides]
 capabilities = ["report.build"]
 
 [permissions]
-# Writes exported reports into a temp folder, then asks the host to open them.
-filesystem = ["<system temp>/limen-reports"]
+# Writes a report where the user chose to put it. `<user-selected>` is a file
+# the operating system's own save dialog returned — this module cannot name a
+# path of its own, and the person doing the saving picks every one of them.
+filesystem = ["<user-selected>"]
