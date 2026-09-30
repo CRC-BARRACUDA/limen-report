@@ -6,7 +6,7 @@ name = "report"
 version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Turn report specs into in-app views or exported Markdown/HTML/CSV documents."
+description = "Turn report specs into in-app views or a branded PDF."
 repository = "https://github.com/CRC-BARRACUDA/limen-report"
 
 [lib]

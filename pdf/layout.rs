@@ -279,7 +279,11 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
             .iter()
             .map(|line| {
                 let (label, value) = match line.split_once(':') {
-                    Some((l, v)) => (l.trim(), v.trim()),
+                    // A label written for a screen may carry its own colon —
+                    // `From:` — and the module that sends it has one line for
+                    // both. Whatever is left of the separator goes with it
+                    // rather than opening the value.
+                    Some((l, v)) => (l.trim(), v.trim_start_matches(':').trim()),
                     None => ("", line.as_str()),
                 };
                 let parts = wrap(font, value, 9.5, col - 6.0).into_iter().take(3).collect();

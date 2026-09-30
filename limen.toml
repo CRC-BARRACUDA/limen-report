@@ -5,7 +5,7 @@ version = "0.2.0"
 language = "native"
 entry = "report"
 abi = "native"
-description = "Generate reports for other modules — a branded PDF, or the same report as a page."
+description = "Generate reports for other modules — a branded PDF."
 repo = "CRC-BARRACUDA/limen-report"
 
 [provides]
