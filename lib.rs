@@ -697,9 +697,18 @@ mod pdf_tests {
             let mut s = spec(80);
             s["theme"] = json!(theme);
             let doc = pdf::layout::render(&s, font, "2026-09-29 12:00 UTC");
-            let path = format!("/tmp/limen-report-{theme}.pdf");
+            // The platform's own temp directory, not `/tmp`: this test exists so
+            // a person can open the result and look at it, and on Windows that
+            // path does not exist — the write failed with `NotFound`, which is a
+            // confusing way to be told a test is Linux-only.
+            let path = std::env::temp_dir().join(format!("limen-report-{theme}.pdf"));
             std::fs::write(&path, &doc.bytes).unwrap();
-            println!("wrote {path} — {} bytes, {} pages", doc.bytes.len(), doc.pages);
+            println!(
+                "wrote {} — {} bytes, {} pages",
+                path.display(),
+                doc.bytes.len(),
+                doc.pages
+            );
         }
     }
 }
@@ -950,15 +959,29 @@ mod figure_tests {
 mod render_probe {
     use super::*;
 
-    /// Render a spec from a file, for looking at.
+    /// Render a real spec from a file, for looking at: drop a caller's spec
+    /// next to this and see what the document actually comes out like.
+    ///
+    /// Both paths are in the platform's own temp directory rather than `/tmp`,
+    /// which does not exist on Windows — and `LIMEN_SPEC` overrides the input,
+    /// so a spec kept anywhere can be rendered without editing this.
     #[test]
-    #[ignore = "reads /tmp/spec.json; run with --ignored"]
+    #[ignore = "reads spec.json from the temp dir (or $LIMEN_SPEC); run with --ignored"]
     fn render_spec_file() {
-        let text = std::fs::read_to_string("/tmp/spec.json").unwrap();
+        let input = std::env::var_os("LIMEN_SPEC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("spec.json"));
+        let text = std::fs::read_to_string(&input).unwrap_or_else(|e| {
+            // Which file, and that it is the input rather than the module,
+            // because this test is usually run by somebody who has just put a
+            // spec somewhere and wants to see it.
+            panic!("no spec to render at {}: {e}", input.display())
+        });
         let spec: Value = text.parse().unwrap();
         let font = pdf::font().unwrap();
         let doc = pdf::layout::render(&spec, font, &today());
-        std::fs::write("/tmp/spec.pdf", &doc.bytes).unwrap();
-        println!("wrote /tmp/spec.pdf — {} pages", doc.pages);
+        let out = std::env::temp_dir().join("spec.pdf");
+        std::fs::write(&out, &doc.bytes).unwrap();
+        println!("wrote {} — {} pages", out.display(), doc.pages);
     }
 }
