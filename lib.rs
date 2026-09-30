@@ -795,9 +795,18 @@ mod pdf_tests {
             let mut s = spec(80);
             s["theme"] = json!(theme);
             let doc = pdf::layout::render(&s, font, "2026-09-29 12:00 UTC");
-            let path = format!("/tmp/limen-report-{theme}.pdf");
+            // The platform's own temp directory, not `/tmp`: this test exists so
+            // a person can open the result and look at it, and on Windows that
+            // path does not exist — the write failed with `NotFound`, which is a
+            // confusing way to be told the test is Linux-only.
+            let path = std::env::temp_dir().join(format!("limen-report-{theme}.pdf"));
             std::fs::write(&path, &doc.bytes).unwrap();
-            println!("wrote {path} — {} bytes, {} pages", doc.bytes.len(), doc.pages);
+            println!(
+                "wrote {} — {} bytes, {} pages",
+                path.display(),
+                doc.bytes.len(),
+                doc.pages
+            );
         }
     }
 }
