@@ -2,7 +2,7 @@
 //!
 //! Provides `report.build`. It's an optional companion for data modules (e.g.
 //! `devices`): they hand it a spec; it renders tables + charts in a new tab, or
-//! writes a Markdown / HTML / CSV file and opens it. Because it's *optional*, a
+//! writes a branded PDF and saves it where you choose. Because it's *optional*, a
 //! data module only offers "Make Report" when this module is loaded (discovered
 //! via `host.capabilities()`).
 //!
@@ -11,15 +11,15 @@
 //! {
 //!   "title": "Device Report",
 //!   "subtitle": "2026-07-27",
-//!   "format": "view" | "pdf" | "html",
-//!   "theme":  "light" | "dark",          // PDF only; light is the default
+//!   "format": "view" | "pdf",
+//!   "theme":  "light" | "dark",          // light is the default
 //!   "summary": ["77 devices", "66 connected"],
 //!   "charts":  [ { "title": "By category", "data": [ {"label":"usb","value":41} ] } ],
 //!   "sections":[ { "heading": "Connected", "columns": ["A","B"], "rows": [["1","2"]] } ]
 //! }
 //! ```
-//! `format` defaults to `view` (return a view the caller opens in a tab); the
-//! export formats write a file and return null.
+//! `format` defaults to `view` — a view the caller opens in a tab. `pdf` writes
+//! the document and answers with a view saying where it went.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,26 +95,23 @@ fn export_row(spec: &Value) -> Vec<limen_sdk_rust::ui::Widget> {
     // user chose.
     let mut args = spec.clone();
     if let Some(o) = args.as_object_mut() {
-        o.remove("format");
+        // There is one format, so the button names it rather than asking.
+        o.insert("format".into(), Value::String("pdf".into()));
         o.remove("theme");
     }
 
     vec![
         label(format!(
-            "PDF · A4 · {sheets} · JetBrains Mono · GPL-3.0-or-later — \
-             or the same report as a page"
+            "PDF · A4 · {sheets} · JetBrains Mono · GPL-3.0-or-later"
         ))
         .weak(),
         row(vec![
-            // Two, and both of them are documents. A table of cells and a
-            // page of Markdown are not reports — they are the data behind one,
-            // and a module that has data to hand over can hand it over itself.
-            select("format", vec!["PDF".into(), "HTML".into()]).label("Save as"),
-            // The ground is the PDF's; the other formats carry their own, or
-            // none. Said in the label rather than by hiding the control, which
-            // would need a round trip to the module on every change of format.
+            // One control, because there is one thing left to decide. A report
+            // is a document; a page, a table of cells and a file of Markdown
+            // are the data behind one, and a module with data to hand over can
+            // hand it over itself.
             select("theme", vec!["White".into(), "Black".into()])
-                .label("Ground (PDF)")
+                .label("Ground")
                 .default(theme_label(spec)),
             button("Save", "report.build", "build").primary().args(args),
             button("Close", "report.build", "build").dismiss(),
@@ -205,23 +202,18 @@ pub(crate) fn chart_data(c: &Value) -> Vec<(String, f64)> {
 // Build
 // --------------------------------------------------------------------------- //
 
-/// Every name a format goes by: what a module writes in a spec, and what the
-/// dropdown in the preview sends.
-///
-/// The dropdown's options are what a person reads — "Word (.docx)" — and a
-/// module's spec says "docx". Both arrive in the same field, so both are
-/// answered here rather than translated in two places that can disagree.
+/// Every name the one format goes by: what a module writes in a spec, and what
+/// the preview's Save button sends. Both arrive in the same field, so both are
+/// answered here rather than in two places that can disagree.
 fn format_of(spec: &Value) -> &'static str {
     match str_at(spec, "format").trim() {
         "pdf" | "PDF" => "pdf",
-        "html" | "HTML" => "html",
         _ => "view",
     }
 }
 
 fn build(spec: &Value, host: &Host) -> Value {
     match format_of(spec) {
-        "html" => export(spec, host, "html", render_html(spec)),
         "pdf" => match pdf::font() {
             Some(font) => {
                 export_bytes(spec, host, "pdf", pdf::layout::render(spec, font, &today()).bytes)
@@ -314,11 +306,6 @@ fn render_view(spec: &Value) -> Value {
 /// Answers with a **view**, never with null: this is what a button press
 /// renders, and a module that answers a click with nothing leaves the tab it
 /// was pressed in showing an error about a view it did not get.
-fn export(spec: &Value, host: &Host, ext: &str, content: String) -> Value {
-    export_bytes(spec, host, ext, content.into_bytes())
-}
-
-/// The same, for a document that is not text.
 fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>) -> Value {
     let suggested = suggested_name(spec, ext);
     let Some(path) = host.save_file(&suggested) else {
@@ -422,82 +409,6 @@ fn today_date() -> String {
 // Renderers
 // --------------------------------------------------------------------------- //
 
-fn render_html(spec: &Value) -> String {
-    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-    let title = {
-        let t = str_at(spec, "title");
-        if t.is_empty() { "Report".to_string() } else { esc(t) }
-    };
-    let mut body = String::new();
-    body.push_str(&format!("<h1>{title}</h1>\n"));
-    let subtitle = str_at(spec, "subtitle");
-    if !subtitle.is_empty() {
-        body.push_str(&format!("<p class=sub>{}</p>\n", esc(subtitle)));
-    }
-    if !arr_at(spec, "summary").is_empty() {
-        body.push_str("<ul>\n");
-        for line in arr_at(spec, "summary") {
-            if let Some(s) = line.as_str() {
-                body.push_str(&format!("<li>{}</li>\n", esc(s)));
-            }
-        }
-        body.push_str("</ul>\n");
-    }
-    for c in arr_at(spec, "charts") {
-        let ct = str_at(c, "title");
-        if !ct.is_empty() {
-            body.push_str(&format!("<h2>{}</h2>\n", esc(ct)));
-        }
-        let data = chart_data(c);
-        let max = data.iter().map(|(_, v)| *v).fold(0.0_f64, f64::max).max(1.0);
-        body.push_str("<div class=chart>\n");
-        for (label, value) in &data {
-            let pct = (value / max * 100.0).clamp(0.0, 100.0);
-            body.push_str(&format!(
-                "<div class=bar><span class=k>{}</span>\
-                 <span class=track><span class=fill style=\"width:{pct:.1}%\"></span></span>\
-                 <span class=v>{}</span></div>\n",
-                esc(label),
-                fmt_num(*value),
-            ));
-        }
-        body.push_str("</div>\n");
-    }
-    for section in arr_at(spec, "sections") {
-        let heading = str_at(section, "heading");
-        if !heading.is_empty() {
-            body.push_str(&format!("<h2>{}</h2>\n", esc(heading)));
-        }
-        let cols = columns(section);
-        body.push_str("<table>\n<thead><tr>");
-        for col in &cols {
-            body.push_str(&format!("<th>{}</th>", esc(col)));
-        }
-        body.push_str("</tr></thead>\n<tbody>\n");
-        for row in rows(section) {
-            body.push_str("<tr>");
-            for cellv in row {
-                body.push_str(&format!("<td>{}</td>", esc(&cellv)));
-            }
-            body.push_str("</tr>\n");
-        }
-        body.push_str("</tbody></table>\n");
-    }
-    format!(
-        "<!doctype html><html><head><meta charset=utf-8><title>{title}</title><style>\
-         body{{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1c1f24}}\
-         h1{{margin-bottom:.2rem}} .sub{{color:#7a828e;margin-top:0}}\
-         table{{border-collapse:collapse;width:100%;margin:.5rem 0 1.5rem}}\
-         th,td{{border:1px solid #d7dae0;padding:.35rem .6rem;text-align:left;font-size:.92rem}}\
-         th{{background:#f2f4f7}} tr:nth-child(even) td{{background:#fafbfc}}\
-         .chart{{margin:.5rem 0 1.5rem}} .bar{{display:flex;align-items:center;gap:.6rem;margin:.2rem 0}}\
-         .bar .k{{width:9rem;text-align:right;color:#3b414d;font-size:.9rem}}\
-         .bar .track{{flex:1;background:#eef1f5;border-radius:4px;overflow:hidden;height:1rem}}\
-         .bar .fill{{display:block;height:100%;background:#5c9cf5}} .bar .v{{width:3rem;color:#7a828e;font-size:.9rem}}\
-         </style></head><body>\n{body}</body></html>\n"
-    )
-}
-
 // --------------------------------------------------------------------------- //
 // Small helpers
 // --------------------------------------------------------------------------- //
@@ -556,15 +467,6 @@ mod tests {
         assert!(kinds.contains(&"chart"));
         assert!(kinds.contains(&"table"));
     }
-
-    #[test]
-    fn html_renders() {
-        let html = render_html(&sample());
-        assert!(html.contains("<h1>Device Report</h1>"));
-        assert!(html.contains("class=fill"));
-    }
-
-
 
 }
 
@@ -798,7 +700,7 @@ mod pdf_tests {
             // The platform's own temp directory, not `/tmp`: this test exists so
             // a person can open the result and look at it, and on Windows that
             // path does not exist — the write failed with `NotFound`, which is a
-            // confusing way to be told the test is Linux-only.
+            // confusing way to be told a test is Linux-only.
             let path = std::env::temp_dir().join(format!("limen-report-{theme}.pdf"));
             std::fs::write(&path, &doc.bytes).unwrap();
             println!(
@@ -1017,9 +919,69 @@ mod save_tests {
     /// A caller that says nothing is filed under its title, as before.
     #[test]
     fn without_a_name_the_title_is_the_name() {
-        let name = suggested_name(&json!({ "title": "Device Report" }), "html");
+        let name = suggested_name(&json!({ "title": "Device Report" }), "pdf");
         assert!(name.starts_with("device-report_"), "{name}");
-        assert!(name.ends_with(".html"));
+        assert!(name.ends_with(".pdf"));
     }
 }
 
+#[cfg(test)]
+mod figure_tests {
+    use super::*;
+    use limen_sdk_rust::json;
+
+    /// A label that came with its own colon does not open the value with a
+    /// second one — `From:: someone` was what a module's own screen label
+    /// looked like once the layout split the line.
+    #[test]
+    fn a_label_keeps_its_own_colon_out_of_the_value() {
+        let font = pdf::font().unwrap();
+        let spec = json!({
+            "title": "t",
+            "summary": ["From:: jsegui@soluafrica.test", "Score: 100/100"],
+            "sections": [],
+        });
+        let bytes = pdf::layout::render(&spec, font, "now").bytes;
+        let text = String::from_utf8_lossy(&bytes);
+        // Drawn in pieces, because a figure's value wraps — so the run is
+        // matched by its start rather than whole.
+        assert!(text.contains(&font.encode("jsegui")), "the address was not drawn");
+        assert!(
+            !text.contains(&font.encode(": jsegui")),
+            "the value still opens with a colon"
+        );
+        // And the label above it is the label, without one.
+        assert!(text.contains(&font.encode("FROM")), "the label");
+    }
+}
+
+#[cfg(test)]
+mod render_probe {
+    use super::*;
+
+    /// Render a real spec from a file, for looking at: drop a caller's spec
+    /// next to this and see what the document actually comes out like.
+    ///
+    /// Both paths are in the platform's own temp directory rather than `/tmp`,
+    /// which does not exist on Windows — and `LIMEN_SPEC` overrides the input,
+    /// so a spec kept anywhere can be rendered without editing this.
+    #[test]
+    #[ignore = "reads spec.json from the temp dir (or $LIMEN_SPEC); run with --ignored"]
+    fn render_spec_file() {
+        let input = std::env::var_os("LIMEN_SPEC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("spec.json"));
+        let text = std::fs::read_to_string(&input).unwrap_or_else(|e| {
+            // Which file, and that it is the input rather than the module,
+            // because this test is usually run by somebody who has just put a
+            // spec somewhere and wants to see it.
+            panic!("no spec to render at {}: {e}", input.display())
+        });
+        let spec: Value = text.parse().unwrap();
+        let font = pdf::font().unwrap();
+        let doc = pdf::layout::render(&spec, font, &today());
+        let out = std::env::temp_dir().join("spec.pdf");
+        std::fs::write(&out, &doc.bytes).unwrap();
+        println!("wrote {} — {} pages", out.display(), doc.pages);
+    }
+}
