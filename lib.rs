@@ -28,7 +28,53 @@ mod pdf;
 use limen_sdk_rust::ui::{
     button, chart, label, row, select, separator, table, window, window_modal_sized,
 };
-use limen_sdk_rust::{export_module, rpc, Handler, Host, RpcError, Value};
+use limen_sdk_rust::{export_module, rpc, Catalog, Handler, Host, RpcError, Value};
+
+/// Every word this module shows, in each language it has.
+///
+/// English lives in a file beside the Ukrainian rather than in the code: a
+/// string written into the source is a string nobody can translate.
+pub(crate) fn catalog() -> &'static Catalog {
+    static C: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        Catalog::new(&[
+            ("en", include_str!("locales/en.toml")),
+            ("uk", include_str!("locales/uk.toml")),
+        ])
+    })
+}
+
+/// Whether a dropdown's answer is this choice, in whichever language it was
+/// shown in. An option is its own value, so a person reading Ukrainian sends
+/// Ukrainian back — and a module's spec may say "dark" in neither.
+fn chose(answer: &str, key: &str) -> bool {
+    ["en", "uk"].iter().any(|lang| catalog().tr(lang, key) == answer)
+}
+
+/// The ground, named the one way the renderer knows it.
+///
+/// The dropdown sends a word in the reader's language and a module's spec says
+/// `light`/`dark`; both mean the same thing, and the document should not have to
+/// know about either.
+fn ground_of(spec: &Value) -> &'static str {
+    let said = str_at(spec, "theme");
+    if said == "dark" || said == "Dark" || chose(said, "preview.black") {
+        "dark"
+    } else {
+        "light"
+    }
+}
+
+/// The spec as the renderer wants it: the ground named canonically, and the
+/// language carried along so the document's own lines can be written in it.
+fn canonical(spec: &Value, lang: &str) -> Value {
+    let mut out = spec.clone();
+    if let Some(o) = out.as_object_mut() {
+        o.insert("theme".into(), Value::String(ground_of(spec).into()));
+        o.insert("lang".into(), Value::String(lang.to_string()));
+    }
+    out
+}
 
 #[derive(Default)]
 struct Report;
@@ -45,9 +91,11 @@ impl Handler for Report {
         params: Value,
         host: &Host,
     ) -> Result<Value, RpcError> {
+        let lang = host.locale();
+        let lang = lang.as_str();
         match method {
-            "ui" => Ok(landing()),
-            "build" => Ok(build(&params, host)),
+            "ui" => Ok(landing(lang)),
+            "build" => Ok(build(&params, host, lang)),
             // Open what was just written, in whatever the system opens a PDF
             // with. Its own method rather than part of `build`, because it is
             // a different thing to ask for.
@@ -56,7 +104,7 @@ impl Handler for Report {
                 if !path.is_empty() {
                     host.open("path", path);
                 }
-                Ok(window("Report", vec![label(path).mono()]))
+                Ok(window(catalog().tr(lang, "ui.title"), vec![label(path).mono()]))
             }
             other => Err(RpcError::new(
                 rpc::METHOD_NOT_FOUND,
@@ -74,15 +122,16 @@ impl Handler for Report {
 const PREVIEW_ROWS: usize = 12;
 
 /// What the PDF will be, and the two controls that make it.
-fn export_row(spec: &Value) -> Vec<limen_sdk_rust::ui::Widget> {
+fn export_row(spec: &Value, lang: &str) -> Vec<limen_sdk_rust::ui::Widget> {
+    let t = |k: &str| catalog().tr(lang, k);
     let Some(font) = pdf::font() else {
         return Vec::new();
     };
-    let pages = pdf::layout::render(spec, font, &today()).pages;
+    let pages = pdf::layout::render(&canonical(spec, lang), font, &today()).pages;
     let sheets = if pages == 1 {
-        "1 page".to_string()
+        t("preview.page_one")
     } else {
-        format!("{pages} pages")
+        t("preview.pages").replace("{n}", &pages.to_string())
     };
 
     // The whole spec travels with the button, so the export does not depend on
@@ -101,45 +150,44 @@ fn export_row(spec: &Value) -> Vec<limen_sdk_rust::ui::Widget> {
     }
 
     vec![
-        label(format!(
-            "PDF · A4 · {sheets} · JetBrains Mono · GPL-3.0-or-later"
-        ))
-        .weak(),
+        label(t("preview.meta").replace("{sheets}", &sheets)).weak(),
         row(vec![
             // One control, because there is one thing left to decide. A report
             // is a document; a page, a table of cells and a file of Markdown
             // are the data behind one, and a module with data to hand over can
             // hand it over itself.
-            select("theme", vec!["White".into(), "Black".into()])
-                .label("Ground")
-                .default(theme_label(spec)),
-            button("Save", "report.build", "build").primary().args(args),
-            button("Close", "report.build", "build").dismiss(),
+            select("theme", vec![t("preview.white"), t("preview.black")])
+                .label(t("preview.ground"))
+                .default(theme_label(spec, lang)),
+            button(t("preview.save"), "report.build", "build")
+                .primary()
+                .args(args),
+            button(t("preview.close"), "report.build", "build").dismiss(),
         ]),
         separator(),
     ]
 }
 
 /// Which way round the dropdown starts: what the caller asked for, if it asked.
-fn theme_label(spec: &Value) -> &'static str {
-    match str_at(spec, "theme") {
-        "dark" | "Dark" | "Black" => "Black",
-        _ => "White",
-    }
+fn theme_label(spec: &Value, lang: &str) -> String {
+    catalog().tr(
+        lang,
+        if ground_of(spec) == "dark" {
+            "preview.black"
+        } else {
+            "preview.white"
+        },
+    )
 }
 
 /// Opening `report` on its own just explains what it's for.
-fn landing() -> Value {
+fn landing(lang: &str) -> Value {
+    let t = |k: &str| catalog().tr(lang, k);
     window(
-        "Report",
+        t("ui.title"),
         vec![
-            label("Report generator").strong(),
-            label(
-                "This module builds reports for other modules — a branded PDF, or the same \
-                 report as a page. Open a data module (e.g. Devices) and use its “Make \
-                 Report” action; the button only appears while this module is installed.",
-            )
-            .weak(),
+            label(t("ui.landing_title")).strong(),
+            label(t("ui.landing_body")).weak(),
         ],
     )
 }
@@ -212,12 +260,16 @@ fn format_of(spec: &Value) -> &'static str {
     }
 }
 
-fn build(spec: &Value, host: &Host) -> Value {
+fn build(spec: &Value, host: &Host, lang: &str) -> Value {
     match format_of(spec) {
         "pdf" => match pdf::font() {
-            Some(font) => {
-                export_bytes(spec, host, "pdf", pdf::layout::render(spec, font, &today()).bytes)
-            }
+            Some(font) => export_bytes(
+                spec,
+                host,
+                "pdf",
+                pdf::layout::render(&canonical(spec, lang), font, &today()).bytes,
+                lang,
+            ),
             // The face is embedded in this library, so this cannot happen in a
             // build that shipped — but a report that silently came out as text
             // when a PDF was asked for would be worse than one that says so.
@@ -227,7 +279,7 @@ fn build(spec: &Value, host: &Host) -> Value {
             }
         },
         // "" | "view" | anything else → an in-app view the caller opens in a tab.
-        _ => render_view(spec),
+        _ => render_view(spec, lang),
     }
 }
 
@@ -240,17 +292,22 @@ fn build(spec: &Value, host: &Host) -> Value {
 /// instead is an answer to the two questions somebody asks before pressing
 /// print — *is this the right data*, and *how long is it* — with the buttons
 /// that produce the file sitting on the answer.
-fn render_view(spec: &Value) -> Value {
+fn render_view(spec: &Value, lang: &str) -> Value {
+    let t = |k: &str| catalog().tr(lang, k);
     let title = {
         let t = str_at(spec, "title");
-        if t.is_empty() { "Report" } else { t }
+        if t.is_empty() {
+            catalog().tr(lang, "ui.title")
+        } else {
+            t.to_string()
+        }
     };
-    let mut w = vec![label(title).heading()];
+    let mut w = vec![label(title.clone()).heading()];
     let subtitle = str_at(spec, "subtitle");
     if !subtitle.is_empty() {
         w.push(label(subtitle).weak());
     }
-    w.extend(export_row(spec));
+    w.extend(export_row(spec, lang));
     for line in arr_at(spec, "summary") {
         if let Some(s) = line.as_str() {
             w.push(label(s));
@@ -278,17 +335,13 @@ fn render_view(spec: &Value) -> Value {
         if hidden > 0 {
             // Said out loud, because a preview that quietly shows twelve of
             // four hundred rows is a preview of a different document.
-            w.push(label(format!("… and {hidden} more row(s) — all of them are in the PDF")).weak());
+            w.push(label(t("preview.more_rows").replace("{n}", &hidden.to_string())).weak());
         }
         w.push(separator());
     }
     // What every page of the document is signed with, shown once here.
     w.push(
-        label(format!(
-            "LIMEN · Barracuda Team · GPL-3.0-or-later · {} · set in JetBrains Mono (SIL OFL 1.1)",
-            today()
-        ))
-        .weak(),
+        label(t("doc.footer").replace("{generated}", &today())).weak(),
     );
     // A pop-up over the screen that asked for it, rather than a page that
     // replaces it: a report is something you look at and then decide about,
@@ -306,16 +359,14 @@ fn render_view(spec: &Value) -> Value {
 /// Answers with a **view**, never with null: this is what a button press
 /// renders, and a module that answers a click with nothing leaves the tab it
 /// was pressed in showing an error about a view it did not get.
-fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>) -> Value {
+fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>, lang: &str) -> Value {
+    let t = |k: &str| catalog().tr(lang, k);
     let suggested = suggested_name(spec, ext);
     let Some(path) = host.save_file(&suggested) else {
         // Cancelled. Not an error, and not silence either — the pop-up is gone
         // by now, and a click that appears to have done nothing is a click
         // somebody presses again.
-        return window(
-            "Report",
-            vec![label("Not saved — the save was cancelled.").weak()],
-        );
+        return window(t("ui.title"), vec![label(t("save.cancelled")).weak()]);
     };
     let path = std::path::PathBuf::from(&path);
     // The dialog is where the name is chosen, but a name typed without one is
@@ -329,9 +380,9 @@ fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>) -> Value
         Ok(()) => {
             host.log(&format!("report: wrote {}", path.display()));
             window(
-                "Report",
+                t("ui.title"),
                 vec![
-                    label("Saved").strong(),
+                    label(t("save.saved")).strong(),
                     label(path.to_string_lossy().into_owned()).mono(),
                     row(vec![
                         button("Open", "report.build", "open")
@@ -344,9 +395,9 @@ fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>) -> Value
         Err(e) => {
             host.log(&format!("report: failed to write {}: {e}", path.display()));
             window(
-                "Report",
+                t("ui.title"),
                 vec![
-                    label("Could not write the file").strong(),
+                    label(t("save.failed")).strong(),
                     label(format!("{}: {e}", path.display())).weak(),
                 ],
             )
@@ -446,7 +497,7 @@ mod tests {
     use super::*;
     use limen_sdk_rust::json;
 
-    fn sample() -> Value {
+    pub(super) fn sample() -> Value {
         json!({
             "title": "Device Report",
             "subtitle": "today",
@@ -460,7 +511,7 @@ mod tests {
 
     #[test]
     fn view_has_title_chart_and_table() {
-        let v = render_view(&sample());
+        let v = render_view(&sample(), "en");
         assert_eq!(v["title"], "Device Report");
         let kinds: Vec<&str> = v["widgets"].as_array().unwrap().iter()
             .map(|w| w["kind"].as_str().unwrap()).collect();
@@ -732,7 +783,7 @@ mod preview_tests {
     /// decide about, and the module underneath is what you decide to go back to.
     #[test]
     fn the_view_is_a_pop_up_that_previews_the_document() {
-        let view = render_view(&spec());
+        let view = render_view(&spec(), "en");
         assert_eq!(view["modal"], "report.preview", "not a pop-up");
         assert!(view["modal_width"].as_f64().unwrap() > 400.0);
 
@@ -751,7 +802,7 @@ mod preview_tests {
     /// — the choice would be on screen and have no effect.
     #[test]
     fn the_dropdown_owns_the_choice_of_ground() {
-        let view = render_view(&spec());
+        let view = render_view(&spec(), "en");
         let row = view["widgets"]
             .as_array()
             .unwrap()
@@ -776,7 +827,7 @@ mod preview_tests {
         // And a caller that asked for one gets the dropdown pointing at it.
         let mut dark = spec();
         dark["theme"] = json!("dark");
-        let view = render_view(&dark);
+        let view = render_view(&dark, "en");
         let text = view.to_string();
         assert!(text.contains("\"default\":\"Black\""), "{text}");
     }
@@ -812,7 +863,7 @@ mod preview_tests {
     /// document.
     #[test]
     fn a_long_table_is_sampled_and_says_so() {
-        let view = render_view(&spec());
+        let view = render_view(&spec(), "en");
         let table = view["widgets"].as_array().unwrap()
             .iter().find(|w| w["kind"] == "table").unwrap();
         assert_eq!(table["rows"].as_array().unwrap().len(), PREVIEW_ROWS);
@@ -823,14 +874,14 @@ mod preview_tests {
             "title": "t",
             "sections": [{ "columns": ["A"], "rows": [["1"], ["2"]] }],
         });
-        let text = render_view(&small).to_string();
+        let text = render_view(&small, "en").to_string();
         assert!(!text.contains("more row(s)"), "{text}");
     }
 
     /// Closing the pop-up calls nobody: there is nothing to cancel remotely.
     #[test]
     fn close_just_closes() {
-        let view = render_view(&spec());
+        let view = render_view(&spec(), "en");
         let row = view["widgets"].as_array().unwrap()
             .iter().find(|w| w["kind"] == "row").unwrap();
         let close = row["children"].as_array().unwrap().last().unwrap();
@@ -845,19 +896,19 @@ mod preview_tests {
         let font = pdf::font().unwrap();
         let real = pdf::layout::render(&spec(), font, &today()).pages;
         assert!(real >= 2, "ninety rows came to {real} page(s)");
-        let text = render_view(&spec()).to_string();
+        let text = render_view(&spec(), "en").to_string();
         assert!(text.contains(&format!("{real} pages")), "said something else: {text}");
 
         // One page says "1 page", not "1 pages".
         let small = json!({ "title": "t", "sections": [{ "columns": ["A"], "rows": [["1"]] }] });
-        assert!(render_view(&small).to_string().contains("1 page ·"));
+        assert!(render_view(&small, "en").to_string().contains("1 page ·"));
     }
 
     /// Pressing the button is the same call the caller could have made itself —
     /// the preview adds nothing the export has to be told separately.
     #[test]
     fn the_button_carries_the_whole_spec() {
-        let view = render_view(&spec());
+        let view = render_view(&spec(), "en");
         let widgets = view["widgets"].as_array().unwrap();
         let row = widgets.iter().find(|w| w["kind"] == "row").expect("the export row");
         let save = row["children"].as_array().unwrap()
@@ -983,5 +1034,104 @@ mod render_probe {
         let out = std::env::temp_dir().join("spec.pdf");
         std::fs::write(&out, &doc.bytes).unwrap();
         println!("wrote {} — {} pages", out.display(), doc.pages);
+    }
+}
+
+/// The catalogue, and that both languages actually say everything.
+#[cfg(test)]
+mod i18n_tests {
+    use super::tests::sample;
+    use super::*;
+
+    /// Every `a.b` key a locale file defines, read from the file rather than
+    /// through the catalogue: `tr` falls back to English for a key Ukrainian is
+    /// missing, so asking it would hide exactly what this is looking for.
+    fn keys(src: &str) -> Vec<String> {
+        let mut table = String::new();
+        let mut out = Vec::new();
+        for line in src.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                table = name.to_string();
+            } else if let Some((key, _)) = line.split_once(" = ") {
+                out.push(format!("{table}.{key}"));
+            }
+        }
+        out
+    }
+
+    /// Ukrainian says everything English says. A key only one of them has is a
+    /// screen that falls back to English mid-sentence.
+    #[test]
+    fn both_languages_say_the_same_things() {
+        let en = keys(include_str!("locales/en.toml"));
+        let uk = keys(include_str!("locales/uk.toml"));
+        assert!(en.len() > 15, "the catalogue is suspiciously small");
+        for key in &en {
+            assert!(uk.contains(key), "uk.toml is missing {key}");
+        }
+        for key in uk.iter().filter(|k| !k.starts_with("module.")) {
+            assert!(en.contains(key), "en.toml is missing {key}");
+        }
+    }
+
+    /// The pop-up is the module's own screen, and it is translated — the
+    /// controls, not only whatever the caller titled the report.
+    #[test]
+    fn the_preview_is_translated() {
+        let view = render_view(&sample(), "uk").to_string();
+        for word in ["Тло", "Біле", "Зберегти", "Закрити"] {
+            assert!(view.contains(word), "{word} is missing: {view}");
+        }
+        for english in ["Ground", "\"Save\"", "\"Close\""] {
+            assert!(!view.contains(english), "English survived: {english}");
+        }
+        assert!(view.contains("сторінка") || view.contains("сторінок"), "{view}");
+    }
+
+    /// The ground is chosen by a word in the reader's language, and the
+    /// document only ever hears the one word it knows.
+    #[test]
+    fn a_ground_chosen_in_any_language_is_the_same_ground() {
+        for said in ["Чорне", "Black", "dark", "Dark"] {
+            let mut spec = sample();
+            spec["theme"] = Value::String(said.into());
+            assert_eq!(ground_of(&spec), "dark", "{said} was not understood");
+            assert_eq!(canonical(&spec, "uk")["theme"], "dark");
+        }
+        for said in ["Біле", "White", "light", ""] {
+            let mut spec = sample();
+            spec["theme"] = Value::String(said.into());
+            assert_eq!(ground_of(&spec), "light", "{said} was not understood");
+        }
+        // And the dropdown opens on the ground that was asked for, in the
+        // language it is being read in.
+        let mut dark = sample();
+        dark["theme"] = Value::String("dark".into());
+        assert_eq!(theme_label(&dark, "uk"), "Чорне");
+        assert_eq!(theme_label(&sample(), "uk"), "Біле");
+    }
+
+    /// The document signs every page in the language it was made in, and the
+    /// glyphs for it are actually embedded — a footer the font cannot draw is a
+    /// row of blanks on paper.
+    #[test]
+    fn the_document_is_signed_in_the_readers_language() {
+        let font = pdf::font().expect("the embedded font parses");
+        let doc = pdf::layout::render(&canonical(&sample(), "uk"), font, "2026-09-29 12:00 UTC");
+        assert!(doc.pages >= 1);
+        // Inside the document the words are glyph numbers in a content stream,
+        // so the line itself is checked where it is built — by the same
+        // function the page is signed with.
+        let uk = pdf::layout::footer_line("uk", "2026-09-29 12:00 UTC");
+        let en = pdf::layout::footer_line("en", "2026-09-29 12:00 UTC");
+        assert!(uk.contains("шрифт"), "the footer is still English: {uk}");
+        assert!(en.contains("set in"), "{en}");
+        assert_ne!(uk, en, "both languages sign the page the same way");
+        // And it is the date it was given, not one of its own.
+        assert!(uk.contains("2026-09-29 12:00 UTC"));
     }
 }
