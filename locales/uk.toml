@@ -1,9 +1,34 @@
-# Ukrainian card text for the module manager.
-#
-# Read by the host, not by the module: `[module] title` and `description`
-# are what the card and the tab show when the UI is in Ukrainian. English
-# falls back to `limen.toml`, so there is no en.toml beside this.
+# Українська. Перший блок читає хост, а не модуль: [module] title та
+# description — це те, що показує картка модуля та вкладка. Для англійської
+# такого блоку немає: хост бере її з limen.toml.
 
 [module]
 title = "Звіти"
-description = "Створює звіти для інших модулів — фірмовий PDF або та сама доповідь як сторінка."
+description = "Створює звіти для інших модулів — фірмовий PDF."
+
+[ui]
+title = "Звіт"
+landing_title = "Генератор звітів"
+landing_body = "Цей модуль створює звіти для інших модулів — фірмовий PDF. Відкрийте модуль з даними (наприклад, «Пристрої») і скористайтеся його дією «Створити звіт»; кнопка з’являється лише тоді, коли цей модуль встановлено."
+
+[preview]
+meta = "PDF · A4 · {sheets} · JetBrains Mono · GPL-3.0-or-later"
+page_one = "1 сторінка"
+pages = "сторінок: {n}"
+ground = "Тло"
+white = "Біле"
+black = "Чорне"
+save = "Зберегти"
+close = "Закрити"
+more_rows = "… і ще рядків: {n} — усі вони є у PDF"
+
+[save]
+cancelled = "Не збережено — збереження скасовано."
+saved = "Збережено"
+failed = "Не вдалося записати файл"
+
+# Друкується на кожній сторінці самого документа.
+[doc]
+title = "Звіт"
+footer = "LIMEN · Barracuda Team · GPL-3.0-or-later · {generated} · шрифт JetBrains Mono (SIL OFL 1.1)"
+producer = "Створено в Limen · {generated}"
