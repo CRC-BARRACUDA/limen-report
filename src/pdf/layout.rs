@@ -70,6 +70,8 @@ struct Chrome<'a> {
     /// The line along the bottom of every page: what made this, under what
     /// licence, and with which font.
     footer: String,
+    /// Under it, when the document is signed: with whose OpenPGP key.
+    signer: Option<String>,
 }
 
 /// Draw the masthead and return the y the body starts at.
@@ -152,6 +154,11 @@ fn footer(page: &mut Page, font: &Font, c: &Chrome, n: usize, of: usize) {
     page.line(MARGIN, y - 10.0, PAGE_W - MARGIN, 0.4, c.p.rule);
     page.text(font, 6.5, MARGIN, y, c.p.dim, &c.footer);
     page.text_right(font, 6.5, PAGE_W - MARGIN, y, c.p.dim, &format!("{n} / {of}"));
+    if let Some(signer) = &c.signer {
+        // The whole width is its own: the page number is on the line above.
+        let line = fit(font, signer, 6.5, PAGE_W - 2.0 * MARGIN);
+        page.text(font, 6.5, MARGIN, y + 9.0, c.p.dim, &line);
+    }
 }
 
 /// Where a page can draw down to before it runs into the footer.
@@ -237,6 +244,28 @@ pub(crate) fn footer_line(lang: &str, generated: &str) -> String {
         .replace("{generated}", generated)
 }
 
+/// Who signed the document, as every page says it: the key's user id — name
+/// and email — and its fingerprint, in fours as it is read out and compared.
+///
+/// None unless the spec carries a `signer` with both. Only this module puts
+/// one there, from what Limen says the user's key is (see `canonical`): a
+/// caller's own is dropped before the spec gets here.
+pub(crate) fn signer_line(spec: &Value, lang: &str) -> Option<String> {
+    let signer = spec.get("signer")?;
+    let (who, fingerprint) = (str_at(signer, "user_id").trim(), str_at(signer, "fingerprint").trim());
+    if who.is_empty() || fingerprint.is_empty() {
+        return None;
+    }
+    let fours: Vec<String> =
+        fingerprint.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect();
+    Some(
+        crate::catalog()
+            .tr(lang, "doc.signed_by")
+            .replace("{who}", who)
+            .replace("{fingerprint}", &fours.join(" ")),
+    )
+}
+
 pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
     // The language travels in the spec rather than in this signature: the
     // document's own lines — the fallback title, and the footer every page is
@@ -260,6 +289,7 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
         subtitle: str_at(spec, "subtitle"),
         p: palette,
         footer: footer_line(lang, generated),
+        signer: signer_line(spec, lang),
     };
 
     let mut doc = Pdf::new(font, title, t("doc.producer").replace("{generated}", generated));
@@ -585,6 +615,9 @@ fn note_everything(doc: &mut Pdf, spec: &Value, chrome: &Chrome) {
     doc.note_text(chrome.title);
     doc.note_text(chrome.subtitle);
     doc.note_text(&chrome.footer);
+    if let Some(signer) = &chrome.signer {
+        doc.note_text(signer);
+    }
     doc.note_text("BARRACUDA TEAM LIMEN 0123456789 / …");
     for line in arr_at(spec, "summary") {
         if let Some(s) = line.as_str() {

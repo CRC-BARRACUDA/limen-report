@@ -20,15 +20,22 @@ white = "Біле"
 black = "Чорне"
 save = "Зберегти"
 close = "Закрити"
+sign = "Підпис"
+sign_no = "Без підпису"
 more_rows = "… і ще рядків: {n} — усі вони є у PDF"
 
 [save]
 cancelled = "Не збережено — збереження скасовано."
 saved = "Збережено"
 failed = "Не вдалося записати файл"
+signed = "Підписано: {who}"
+not_signed = "Збережено, але не підписано"
+signer_gone = "{who} більше недоступний для підпису — чи під’єднано його токен?"
+claims_signature = "У збереженому файлі внизу сторінок досі зазначено вас як підписанта, і переписати його без цього не вдалося. Збережіть його ще раз."
 
 # Друкується на кожній сторінці самого документа.
 [doc]
 title = "Звіт"
 footer = "LIMEN · Barracuda Team · GPL-3.0-or-later · {generated} · шрифт JetBrains Mono (SIL OFL 1.1)"
 producer = "Створено в Limen · {generated}"
+signed_by = "Підписано OpenPGP · {who} · {fingerprint}"
