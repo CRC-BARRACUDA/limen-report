@@ -20,6 +20,16 @@
 //! ```
 //! `format` defaults to `view` — a view the caller opens in a tab. `pdf` writes
 //! the document and answers with a view saying where it went.
+//!
+//! ## Signing
+//! The preview offers to sign what is saved with one of the user's own OpenPGP
+//! keys: a list of them, each as each of its user ids, chosen there and then.
+//! The keys are theirs and stay with their GnuPG: this module asks Limen
+//! (`host.gpg_identities`, `host.gpg_sign_file` — the `gpg` permission), Limen
+//! asks GnuPG, and GnuPG asks the user. The signature is a file beside the document —
+//! `report.pdf.asc` — so the PDF itself is as it would have been, and anyone
+//! with the user's public key can check it: `gpg --verify report.pdf.asc
+//! report.pdf`. A report that could not be signed is still saved, and says so.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -65,13 +75,61 @@ fn ground_of(spec: &Value) -> &'static str {
     }
 }
 
-/// The spec as the renderer wants it: the ground named canonically, and the
-/// language carried along so the document's own lines can be written in it.
-fn canonical(spec: &Value, lang: &str) -> Value {
+/// How a way of signing reads in the preview's list: the user id, and the end
+/// of the key's fingerprint — two tokens carrying the same name and address
+/// are told apart by it.
+fn identity_label(id: &limen_sdk_rust::GpgIdentity) -> String {
+    let f = id.fingerprint.as_str();
+    let tail = &f[f.len().saturating_sub(16)..];
+    let fours: Vec<&str> = tail.as_bytes().chunks(4).map(|c| std::str::from_utf8(c).unwrap_or("")).collect();
+    format!("{} · {}", id.user_id, fours.join(" "))
+}
+
+/// What the reader chose under "Signature".
+#[derive(Debug, PartialEq)]
+enum Signing {
+    /// Not to sign: the first choice, or no answer at all.
+    No,
+    /// To sign as this one.
+    As(limen_sdk_rust::GpgIdentity),
+    /// Something that is not among the ways there are to sign now — a token
+    /// pulled out since the list was shown, say: what was picked.
+    Gone(String),
+}
+
+/// Resolve the "sign" dropdown's answer — the label that was shown — against
+/// the ways there are to sign. "None" is none in whichever language.
+fn signing_choice(spec: &Value, identities: &[limen_sdk_rust::GpgIdentity]) -> Signing {
+    let said = str_at(spec, "sign").trim();
+    if said.is_empty() || chose(said, "preview.sign_no") {
+        return Signing::No;
+    }
+    match identities.iter().find(|id| identity_label(id) == said) {
+        Some(id) => Signing::As(id.clone()),
+        None => Signing::Gone(said.to_string()),
+    }
+}
+
+/// The spec as the renderer wants it: the ground named canonically, the
+/// language carried along so the document's own lines can be written in it —
+/// and, when the document is to be signed, whose key signs it, for the foot of
+/// every page.
+///
+/// `signer` is the only way one gets there. A `signer` in the caller's spec is
+/// dropped: who signed a document is for Limen to say, from the user's own
+/// key, not for the module that asked for the report.
+fn canonical(spec: &Value, lang: &str, signer: Option<&limen_sdk_rust::GpgIdentity>) -> Value {
     let mut out = spec.clone();
     if let Some(o) = out.as_object_mut() {
         o.insert("theme".into(), Value::String(ground_of(spec).into()));
         o.insert("lang".into(), Value::String(lang.to_string()));
+        o.remove("signer");
+        if let Some(id) = signer {
+            o.insert(
+                "signer".into(),
+                limen_sdk_rust::json!({ "user_id": id.user_id, "fingerprint": id.fingerprint }),
+            );
+        }
     }
     out
 }
@@ -122,12 +180,19 @@ impl Handler for Report {
 const PREVIEW_ROWS: usize = 12;
 
 /// What the PDF will be, and the two controls that make it.
-fn export_row(spec: &Value, lang: &str) -> Vec<limen_sdk_rust::ui::Widget> {
+///
+/// `identities`: the ways the user can sign what is saved — their keys, as
+/// each of their user ids.
+fn export_row(
+    spec: &Value,
+    lang: &str,
+    identities: &[limen_sdk_rust::GpgIdentity],
+) -> Vec<limen_sdk_rust::ui::Widget> {
     let t = |k: &str| catalog().tr(lang, k);
     let Some(font) = pdf::font() else {
         return Vec::new();
     };
-    let pages = pdf::layout::render(&canonical(spec, lang), font, &today()).pages;
+    let pages = pdf::layout::render(&canonical(spec, lang, None), font, &today()).pages;
     let sheets = if pages == 1 {
         t("preview.page_one")
     } else {
@@ -147,6 +212,7 @@ fn export_row(spec: &Value, lang: &str) -> Vec<limen_sdk_rust::ui::Widget> {
         // There is one format, so the button names it rather than asking.
         o.insert("format".into(), Value::String("pdf".into()));
         o.remove("theme");
+        o.remove("sign");
     }
 
     vec![
@@ -159,6 +225,15 @@ fn export_row(spec: &Value, lang: &str) -> Vec<limen_sdk_rust::ui::Widget> {
             select("theme", vec![t("preview.white"), t("preview.black")])
                 .label(t("preview.ground"))
                 .default(theme_label(spec, lang)),
+            // Whether to sign what is saved, and as whom: none, or one of the
+            // user's keys as one of its user ids. Like the ground, it is the
+            // reader's to choose here, so it is not among the button's args.
+            select(
+                "sign",
+                std::iter::once(t("preview.sign_no")).chain(identities.iter().map(identity_label)).collect(),
+            )
+            .label(t("preview.sign"))
+            .default(t("preview.sign_no")),
             button(t("preview.save"), "report.build", "build")
                 .primary()
                 .args(args),
@@ -263,13 +338,28 @@ fn format_of(spec: &Value) -> &'static str {
 fn build(spec: &Value, host: &Host, lang: &str) -> Value {
     match format_of(spec) {
         "pdf" => match pdf::font() {
-            Some(font) => export_bytes(
-                spec,
-                host,
-                "pdf",
-                pdf::layout::render(&canonical(spec, lang), font, &today()).bytes,
-                lang,
-            ),
+            Some(font) => {
+                // One moment for the whole document, signed or not.
+                let now = today();
+                let render = |signer: Option<&limen_sdk_rust::GpgIdentity>| {
+                    pdf::layout::render(&canonical(spec, lang, signer), font, &now).bytes
+                };
+                // As whom it will be signed is settled first: every page names
+                // them, and the pages are what is signed.
+                let signer = match host.gpg_identities() {
+                    Ok(identities) => match signing_choice(spec, &identities) {
+                        Signing::No => None,
+                        Signing::As(id) => Some(Ok(id)),
+                        Signing::Gone(said) => Some(Err(catalog().tr(lang, "save.signer_gone").replace("{who}", &said))),
+                    },
+                    // No GnuPG to ask: only a problem if signing was asked for.
+                    Err(e) => match signing_choice(spec, &[]) {
+                        Signing::No => None,
+                        _ => Some(Err(e.message)),
+                    },
+                };
+                export_bytes(spec, host, "pdf", &render, signer, lang)
+            }
             // The face is embedded in this library, so this cannot happen in a
             // build that shipped — but a report that silently came out as text
             // when a PDF was asked for would be worse than one that says so.
@@ -279,7 +369,9 @@ fn build(spec: &Value, host: &Host, lang: &str) -> Value {
             }
         },
         // "" | "view" | anything else → an in-app view the caller opens in a tab.
-        _ => render_view(spec, lang),
+        // The ways there are to sign are asked for now, to offer them. An
+        // older Limen, or one with no GnuPG: none to offer.
+        _ => render_view_with(spec, lang, &host.gpg_identities().unwrap_or_default()),
     }
 }
 
@@ -292,7 +384,13 @@ fn build(spec: &Value, host: &Host, lang: &str) -> Value {
 /// instead is an answer to the two questions somebody asks before pressing
 /// print — *is this the right data*, and *how long is it* — with the buttons
 /// that produce the file sitting on the answer.
+#[cfg(test)]
 fn render_view(spec: &Value, lang: &str) -> Value {
+    render_view_with(spec, lang, &[])
+}
+
+/// [`render_view`], offering `identities` as the ways to sign what is saved.
+fn render_view_with(spec: &Value, lang: &str, identities: &[limen_sdk_rust::GpgIdentity]) -> Value {
     let t = |k: &str| catalog().tr(lang, k);
     let title = {
         let t = str_at(spec, "title");
@@ -307,7 +405,7 @@ fn render_view(spec: &Value, lang: &str) -> Value {
     if !subtitle.is_empty() {
         w.push(label(subtitle).weak());
     }
-    w.extend(export_row(spec, lang));
+    w.extend(export_row(spec, lang, identities));
     for line in arr_at(spec, "summary") {
         if let Some(s) = line.as_str() {
             w.push(label(s));
@@ -359,8 +457,21 @@ fn render_view(spec: &Value, lang: &str) -> Value {
 /// Answers with a **view**, never with null: this is what a button press
 /// renders, and a module that answers a click with nothing leaves the tab it
 /// was pressed in showing an error about a view it did not get.
-fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>, lang: &str) -> Value {
+/// `render` draws the document, naming the signer it is given on every page.
+/// `signer`: None when no signature was asked for; else whose key will sign —
+/// or why there is none to sign with.
+fn export_bytes(
+    spec: &Value,
+    host: &Host,
+    ext: &str,
+    render: &dyn Fn(Option<&limen_sdk_rust::GpgIdentity>) -> Vec<u8>,
+    signer: Option<Result<limen_sdk_rust::GpgIdentity, String>>,
+    lang: &str,
+) -> Value {
     let t = |k: &str| catalog().tr(lang, k);
+    // A document says it is signed only when there is a key to sign it with.
+    let identity = signer.as_ref().and_then(|s| s.as_ref().ok());
+    let content = render(identity);
     let suggested = suggested_name(spec, ext);
     let Some(path) = host.save_file(&suggested) else {
         // Cancelled. Not an error, and not silence either — the pop-up is gone
@@ -379,18 +490,49 @@ fn export_bytes(spec: &Value, host: &Host, ext: &str, content: Vec<u8>, lang: &s
     match std::fs::write(&path, &content) {
         Ok(()) => {
             host.log(&format!("report: wrote {}", path.display()));
-            window(
-                t("ui.title"),
-                vec![
-                    label(t("save.saved")).strong(),
-                    label(path.to_string_lossy().into_owned()).mono(),
-                    row(vec![
-                        button("Open", "report.build", "open")
-                            .primary()
-                            .args(limen_sdk_rust::json!({ "path": path.to_string_lossy() })),
-                    ]),
-                ],
-            )
+            let mut said = vec![
+                label(t("save.saved")).strong(),
+                label(path.to_string_lossy().into_owned()).mono(),
+            ];
+            // Signed after it is written, and only if asked for: the document
+            // is saved either way, and the view says which it was.
+            match &signer {
+                None => {}
+                Some(Err(why)) => {
+                    host.log(&format!("report: not signed: {why}"));
+                    said.push(label(t("save.not_signed")).strong());
+                    said.push(label(why.clone()).weak());
+                }
+                Some(Ok(who)) => match host.gpg_sign_file(&path.to_string_lossy(), Some(who)) {
+                    Ok(signed) => {
+                        host.log(&format!("report: signed as {}", signed.user_id));
+                        said.push(label(t("save.signed").replace("{who}", &signed.user_id)).strong());
+                        // Beside the document, in the folder it was saved to.
+                        said.push(label(signed.signature).mono());
+                    }
+                    Err(e) => {
+                        // Its pages say it is signed, and it is not: written
+                        // again without that line, so it claims nothing.
+                        let plain = std::fs::write(&path, render(None));
+                        host.log(&format!(
+                            "report: not signed: {}{}",
+                            e.message,
+                            if plain.is_ok() { "; saved again without the signer's line" } else { "" }
+                        ));
+                        said.push(label(t("save.not_signed")).strong());
+                        said.push(label(e.message).weak());
+                        if plain.is_err() {
+                            said.push(label(t("save.claims_signature")).weak());
+                        }
+                    }
+                },
+            }
+            said.push(row(vec![
+                button("Open", "report.build", "open")
+                    .primary()
+                    .args(limen_sdk_rust::json!({ "path": path.to_string_lossy() })),
+            ]));
+            window(t("ui.title"), said)
         }
         Err(e) => {
             host.log(&format!("report: failed to write {}: {e}", path.display()));
@@ -680,6 +822,85 @@ mod pdf_tests {
         );
     }
 
+    /// The preview lists every way there is to sign: each key as each of its
+    /// user ids. Two tokens, two user ids each: four, told apart by the user
+    /// id and the end of the fingerprint. What is picked comes back as the
+    /// label shown, and leads to that key and that user id.
+    #[test]
+    fn the_signer_is_picked_from_a_list_of_keys_and_user_ids() {
+        let id = |f: &str, u: &str| limen_sdk_rust::GpgIdentity { fingerprint: f.into(), user_id: u.into(), default: false };
+        let (a, b) = ("46AC14F35EEB6798C506E9CB04F5252E9BD3FC8D", "8D151FD231907502BBFA528E140ABA21244518B8");
+        let ids = vec![
+            id(a, "Olena Koval <olena@example.invalid>"),
+            id(a, "Olena Koval <olena@work.invalid>"),
+            id(b, "Olena Koval <olena@example.invalid>"),
+            id(b, "Olena Koval <olena@work.invalid>"),
+        ];
+        let view = render_view_with(&spec(3), "uk", &ids);
+        let row = view["widgets"].as_array().unwrap().iter().find(|w| w["kind"] == "row").unwrap();
+        let sign = row["children"].as_array().unwrap().iter().find(|c| c["id"] == "sign").unwrap();
+        let options: Vec<&str> = sign["options"].as_array().unwrap().iter().map(|o| o.as_str().unwrap()).collect();
+        assert_eq!(
+            options,
+            vec![
+                "Без підпису",
+                "Olena Koval <olena@example.invalid> · 04F5 252E 9BD3 FC8D",
+                "Olena Koval <olena@work.invalid> · 04F5 252E 9BD3 FC8D",
+                "Olena Koval <olena@example.invalid> · 140A BA21 2445 18B8",
+                "Olena Koval <olena@work.invalid> · 140A BA21 2445 18B8",
+            ]
+        );
+        assert_eq!(sign["default"], "Без підпису", "signing is asked for, never assumed");
+
+        // The same name and address on two tokens: the fingerprint decides.
+        let picked = json!({ "sign": options[4] });
+        assert_eq!(signing_choice(&picked, &ids), Signing::As(ids[3].clone()));
+        assert_eq!(signing_choice(&json!({ "sign": options[1] }), &ids), Signing::As(ids[0].clone()));
+        // None, in either language, or no answer.
+        for none in [json!({}), json!({ "sign": "None" }), json!({ "sign": "Без підпису" }), json!({ "sign": "  " })] {
+            assert_eq!(signing_choice(&none, &ids), Signing::No);
+        }
+        // A token pulled out since the list was shown.
+        assert_eq!(signing_choice(&picked, &ids[..2]), Signing::Gone(options[4].to_string()));
+    }
+
+    /// A signed report names its signer — user id with email, and fingerprint —
+    /// at the foot of every page; one that is not signed says nothing, and a
+    /// caller cannot make it say so.
+    #[test]
+    fn a_signed_report_names_its_signer_on_every_page() {
+        let font = pdf::font().unwrap();
+        let me = limen_sdk_rust::GpgIdentity {
+            user_id: "Olena Koval <olena@example.invalid>".into(),
+            fingerprint: "8D151FD231907502BBFA528E140ABA21244518B8".into(),
+            default: false,
+        };
+        let line = pdf::layout::signer_line(&canonical(&spec(3), "en", Some(&me)), "en").unwrap();
+        assert_eq!(
+            line,
+            "Signed with OpenPGP · Olena Koval <olena@example.invalid> · 8D15 1FD2 3190 7502 BBFA 528E 140A BA21 2445 18B8"
+        );
+        assert!(pdf::layout::signer_line(&canonical(&spec(3), "uk", Some(&me)), "uk").unwrap().starts_with("Підписано OpenPGP"));
+
+        // On every page of a long one.
+        let long = pdf::layout::render(&canonical(&spec(400), "en", Some(&me)), font, "2026-09-29 12:00 UTC");
+        assert!(long.pages > 2);
+        let text = String::from_utf8_lossy(&long.bytes).into_owned();
+        let fingerprint = font.encode("8D15 1FD2 3190 7502 BBFA 528E 140A BA21 2445 18B8");
+        assert_eq!(text.matches(&fingerprint).count(), long.pages, "once a page");
+        assert!(text.contains(&font.encode("olena@example.invalid")), "the email is on the page");
+
+        // Not signed: nothing of it. And a `signer` the caller wrote is dropped.
+        let plain = pdf::layout::render(&canonical(&spec(3), "en", None), font, "2026-09-29 12:00 UTC");
+        assert!(!String::from_utf8_lossy(&plain.bytes).contains(&fingerprint));
+        let mut forged = spec(3);
+        forged["signer"] = json!({ "user_id": "Someone Else <x@example.invalid>", "fingerprint": "8D151FD231907502BBFA528E140ABA21244518B8" });
+        assert!(canonical(&forged, "en", None).get("signer").is_none());
+        let doc = pdf::layout::render(&canonical(&forged, "en", None), font, "2026-09-29 12:00 UTC");
+        assert!(!String::from_utf8_lossy(&doc.bytes).contains(&fingerprint), "a caller cannot sign for the user");
+        assert_eq!(canonical(&forged, "en", Some(&me))["signer"]["user_id"], "Olena Koval <olena@example.invalid>");
+    }
+
     /// Both marks are drawn as vector paths rather than placed as pictures.
     #[test]
     fn both_marks_are_drawn() {
@@ -747,7 +968,13 @@ mod pdf_tests {
         for theme in ["light", "dark"] {
             let mut s = spec(80);
             s["theme"] = json!(theme);
-            let doc = pdf::layout::render(&s, font, "2026-09-29 12:00 UTC");
+            // Signed, so the line that says by whom can be looked at too.
+            let me = limen_sdk_rust::GpgIdentity {
+                user_id: "Olena Koval <olena@example.invalid>".into(),
+                fingerprint: "8D151FD231907502BBFA528E140ABA21244518B8".into(),
+                default: false,
+            };
+            let doc = pdf::layout::render(&canonical(&s, "en", Some(&me)), font, "2026-09-29 12:00 UTC");
             // The platform's own temp directory, not `/tmp`: this test exists so
             // a person can open the result and look at it, and on Windows that
             // path does not exist — the write failed with `NotFound`, which is a
@@ -823,6 +1050,14 @@ mod preview_tests {
         let save = children.iter().find(|c| c["text"] == "Save").expect("the save button");
         assert_eq!(save["action"]["capability"], "report.build");
         assert!(save["args"]["theme"].is_null(), "the button must not carry a ground");
+
+        // Signing is the reader's to ask for, beside it: off unless they do.
+        // With no key to sign with, "None" is all there is to pick.
+        let sign = children.iter().find(|c| c["id"] == "sign").expect("a signature picker");
+        assert_eq!(sign["kind"], "select");
+        assert_eq!(sign["options"], json!(["None"]));
+        assert_eq!(sign["default"], "None");
+        assert!(save["args"]["sign"].is_null(), "nor an answer about signing");
 
         // And a caller that asked for one gets the dropdown pointing at it.
         let mut dark = spec();
@@ -1100,7 +1335,7 @@ mod i18n_tests {
             let mut spec = sample();
             spec["theme"] = Value::String(said.into());
             assert_eq!(ground_of(&spec), "dark", "{said} was not understood");
-            assert_eq!(canonical(&spec, "uk")["theme"], "dark");
+            assert_eq!(canonical(&spec, "uk", None)["theme"], "dark");
         }
         for said in ["Біле", "White", "light", ""] {
             let mut spec = sample();
@@ -1121,7 +1356,7 @@ mod i18n_tests {
     #[test]
     fn the_document_is_signed_in_the_readers_language() {
         let font = pdf::font().expect("the embedded font parses");
-        let doc = pdf::layout::render(&canonical(&sample(), "uk"), font, "2026-09-29 12:00 UTC");
+        let doc = pdf::layout::render(&canonical(&sample(), "uk", None), font, "2026-09-29 12:00 UTC");
         assert!(doc.pages >= 1);
         // Inside the document the words are glyph numbers in a content stream,
         // so the line itself is checked where it is built — by the same

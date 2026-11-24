@@ -62,6 +62,39 @@ back to characters, so `pdftotext` — and anyone selecting a line — gets the
 serial numbers out, in Ukrainian as well as English. A report nobody can copy a
 serial out of is a picture of a report.
 
+## Signing a report
+
+The preview has a **Signature** choice beside the ground: *None*, or one of
+your OpenPGP keys — every key GnuPG has of yours that can sign, listed once for
+each of its user IDs, with the end of its fingerprint so that two tokens with
+the same name on them are told apart. You pick there and then, each time; the
+key set on Limen's OpenPGP page is only what other things sign with by default.
+With one picked, saving a report also:
+
+- writes a detached signature **beside the PDF, in the same folder** —
+  `report.pdf.asc` — which anyone with your public key can check:
+  `gpg --verify report.pdf.asc report.pdf`;
+- names you at the foot of **every page**, under the usual footer: the user ID
+  you picked (name and email) and the key's fingerprint. That user ID is
+  written into the signature as well.
+
+The key is yours and stays with your GnuPG. This module never sees it: it asks
+Limen (`host.gpg_identities`, `host.gpg_sign_file` — the `gpg` permission),
+Limen asks GnuPG, and GnuPG asks you for the passphrase or PIN. Which `gpg`
+program to use is set on Limen's **OpenPGP** page. Limen
+signs only the file you just saved through this module's own save dialog.
+
+If the signature cannot be made — the token pulled out, the passphrase turned
+down — the report is still saved, the view says it is not signed and
+why, and its pages do not name a signer: one written naming you is written
+again without that line.
+
+A `signer` in a caller's spec is ignored. Who signed a report is for Limen to
+say, from your own key, not for the module that asked for the report.
+
+Needs a Limen that has the `gpg` permission; on an older one the report is
+saved unsigned, and says so.
+
 ## Capability
 
 `report.build` — method **`build(spec)`**:

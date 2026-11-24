@@ -16,3 +16,7 @@ capabilities = ["report.build"]
 # the operating system's own save dialog returned — this module cannot name a
 # path of its own, and the person doing the saving picks every one of them.
 filesystem = ["<user-selected>"]
+# Signs a report with your own OpenPGP key, when you ask for it in the preview
+# — only the file you just saved, and through Limen: this module never sees the
+# key, and your GnuPG asks you before it is used.
+gpg = true
