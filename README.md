@@ -47,10 +47,10 @@ is a few hundred lines of byte-writing:
 
 | file | what it is |
 |---|---|
-| `pdf/writer.rs` | objects, streams, the page tree, the cross-reference table, a composite font, a `ToUnicode` map |
-| `pdf/font.rs` | four TrueType tables — `head`, `hhea`, `hmtx`, `cmap` — which is all a PDF needs from a face it embeds whole |
-| `pdf/brand.rs` | both marks as geometry: the Limen brackets on the icon's own 256 grid, the Barracuda facets parsed out of its SVG |
-| `pdf/layout.rs` | the design above |
+| `src/pdf/writer.rs` | objects, streams, the page tree, the cross-reference table, a composite font, a `ToUnicode` map |
+| `src/pdf/font.rs` | four TrueType tables — `head`, `hhea`, `hmtx`, `cmap` — which is all a PDF needs from a face it embeds whole |
+| `src/pdf/brand.rs` | both marks as geometry: the Limen brackets on the icon's own 256 grid, the Barracuda facets parsed out of its SVG |
+| `src/pdf/layout.rs` | the design above |
 
 Nothing is compressed. A report is a few hundred kilobytes either way once the
 font is in it, and an uncompressed content stream is one a person can read with

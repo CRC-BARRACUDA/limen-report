@@ -51,7 +51,7 @@ pub fn gap_marks() -> [[f32; 4]; 3] {
 /// three paths that carry a cubic are flattened to short segments. At the size
 /// a masthead draws it, the difference is well under a printer's dot.
 pub fn barracuda() -> Vec<Vec<(f32, f32)>> {
-    const SVG: &str = include_str!("../resources/barracuda-white.svg");
+    const SVG: &str = include_str!("../../resources/barracuda-white.svg");
     let mut out = Vec::new();
     let mut rest = SVG;
     while let Some(at) = rest.find("d=\"") {

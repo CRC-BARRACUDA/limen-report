@@ -19,6 +19,6 @@ use font::Font;
 /// screen it came from read as one product.
 pub fn font() -> Option<&'static Font> {
     static F: OnceLock<Option<Font>> = OnceLock::new();
-    F.get_or_init(|| Font::parse(include_bytes!("../resources/JetBrainsMono-Regular.ttf")))
+    F.get_or_init(|| Font::parse(include_bytes!("../../resources/JetBrainsMono-Regular.ttf")))
         .as_ref()
 }
