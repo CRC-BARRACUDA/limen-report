@@ -146,8 +146,8 @@ fn the_signer_is_picked_from_a_list_of_keys_and_user_ids() {
         id(b, "Olena Koval <olena@work.invalid>"),
     ];
     let view = render_view_with(&spec(3), "uk", &ids);
-    let row = view["widgets"].as_array().unwrap().iter().find(|w| w["kind"] == "row").unwrap();
-    let sign = row["children"].as_array().unwrap().iter().find(|c| c["id"] == "sign").unwrap();
+    let controls = super::controls(&view);
+    let sign = controls.iter().find(|c| c["id"] == "sign").unwrap();
     let options: Vec<&str> = sign["options"].as_array().unwrap().iter().map(|o| o.as_str().unwrap()).collect();
     assert_eq!(
         options,

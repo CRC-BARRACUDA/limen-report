@@ -16,12 +16,15 @@ use crate::*;
 /// `render` draws the document, naming the signer it is given on every page.
 /// `signer`: None when no signature was asked for; else whose key will sign —
 /// or why there is none to sign with.
+/// `stamp`: None when no hash was asked for; else the hash of the content the
+/// pages carry — or why there is none.
 pub(crate) fn export_bytes(
     spec: &Value,
     host: &Host,
     ext: &str,
     render: &dyn Fn(Option<&limen_sdk_rust::GpgIdentity>) -> Vec<u8>,
     signer: Option<Result<limen_sdk_rust::GpgIdentity, String>>,
+    stamp: Option<Result<Stamp, String>>,
     lang: &str,
 ) -> Value {
     let t = |k: &str| catalog().tr(lang, k);
@@ -82,6 +85,38 @@ pub(crate) fn export_bytes(
                         }
                     }
                 },
+            }
+            // Stamped last, once the file is what it is going to be: a signing
+            // that failed writes it again, and its hash is of what is there.
+            match &stamp {
+                None => {}
+                Some(Err(why)) => {
+                    host.log(&format!("report: not hashed: {why}"));
+                    said.push(label(t("save.not_hashed")).strong());
+                    said.push(label(why.clone()).weak());
+                }
+                Some(Ok(stamp)) => {
+                    let what = stamp.option.label.as_str();
+                    said.push(label(t("save.content_hash").replace("{what}", what)).strong());
+                    said.push(label(stamp.hash.clone()).mono());
+                    // The file's own, beside it — what a recipient checks the
+                    // file they were sent against.
+                    let beside = sidecar_path(&path, &stamp.option);
+                    let kept = hash_of_file(host, &stamp.option, &path)
+                        .and_then(|hash| std::fs::write(&beside, sidecar_text(&hash, &path)).map_err(|e| e.to_string()));
+                    match kept {
+                        Ok(()) => {
+                            host.log(&format!("report: wrote {}", beside.display()));
+                            said.push(label(t("save.file_hash").replace("{what}", what)).strong());
+                            said.push(label(beside.to_string_lossy().into_owned()).mono());
+                        }
+                        Err(why) => {
+                            host.log(&format!("report: the file's hash was not written: {why}"));
+                            said.push(label(t("save.no_file_hash")).strong());
+                            said.push(label(why).weak());
+                        }
+                    }
+                }
             }
             said.push(row(vec![
                 button("Open", "report.build", "open")

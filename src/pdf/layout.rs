@@ -15,6 +15,8 @@ use super::writer::{Page, Pdf, Rgb, PAGE_H, PAGE_W};
 
 const MARGIN: f32 = 42.0;
 const FOOT_H: f32 = 34.0;
+/// One line under the footer.
+const FOOT_LINE: f32 = 9.0;
 
 /// The two grounds a report can be read on.
 ///
@@ -72,6 +74,18 @@ struct Chrome<'a> {
     footer: String,
     /// Under it, when the document is signed: with whose OpenPGP key.
     signer: Option<String>,
+    /// And when it is stamped: the hash of what it says.
+    content_hash: Option<String>,
+}
+
+impl Chrome<'_> {
+    /// How tall the foot of a page is. There has always been room for one
+    /// line under the footer; a second — signed *and* stamped — makes its own,
+    /// so that it is not printed off the edge of the sheet.
+    fn foot_h(&self) -> f32 {
+        let under = usize::from(self.signer.is_some()) + usize::from(self.content_hash.is_some());
+        FOOT_H + under.saturating_sub(1) as f32 * FOOT_LINE
+    }
 }
 
 /// Draw the masthead and return the y the body starts at.
@@ -150,20 +164,36 @@ fn draw_limen(page: &mut Page, x: f32, y: f32, size: f32) {
 
 /// The line along the bottom of every page, and which page it is.
 fn footer(page: &mut Page, font: &Font, c: &Chrome, n: usize, of: usize) {
-    let y = PAGE_H - FOOT_H + 10.0;
+    let y = PAGE_H - c.foot_h() + 10.0;
     page.line(MARGIN, y - 10.0, PAGE_W - MARGIN, 0.4, c.p.rule);
     page.text(font, 6.5, MARGIN, y, c.p.dim, &c.footer);
     page.text_right(font, 6.5, PAGE_W - MARGIN, y, c.p.dim, &format!("{n} / {of}"));
+    let mut under = y;
     if let Some(signer) = &c.signer {
         // The whole width is its own: the page number is on the line above.
+        under += FOOT_LINE;
         let line = fit(font, signer, 6.5, PAGE_W - 2.0 * MARGIN);
-        page.text(font, 6.5, MARGIN, y + 9.0, c.p.dim, &line);
+        page.text(font, 6.5, MARGIN, under, c.p.dim, &line);
+    }
+    if let Some(hash) = &c.content_hash {
+        // Never cut short: a hash with its end missing is not a hash. A long
+        // one is set smaller until the whole of it is on the line.
+        under += FOOT_LINE;
+        let size = size_to_fit(font, hash, 6.5, PAGE_W - 2.0 * MARGIN);
+        page.text(font, size, MARGIN, under, c.p.dim, hash);
     }
 }
 
 /// Where a page can draw down to before it runs into the footer.
-fn body_bottom() -> f32 {
-    PAGE_H - FOOT_H - 8.0
+fn body_bottom(c: &Chrome) -> f32 {
+    PAGE_H - c.foot_h() - 8.0
+}
+
+/// The size, no larger than `size`, at which all of `text` fits in `width`.
+/// Exact, because the face is monospaced.
+pub(crate) fn size_to_fit(font: &Font, text: &str, size: f32, width: f32) -> f32 {
+    let wide = font.width("0", size) * text.chars().count() as f32;
+    if wide <= width { size } else { size * width / wide }
 }
 
 /// How many characters fit in `width` points. Exact, because the face is
@@ -266,6 +296,20 @@ pub(crate) fn signer_line(spec: &Value, lang: &str) -> Option<String> {
     )
 }
 
+/// The hash of what the document says, as every page carries it: by which
+/// algorithm, and the hash whole.
+///
+/// None unless the spec carries a `content_hash` with both — and only this
+/// module puts one there, having worked it out (see `stamped`).
+pub(crate) fn hash_line(spec: &Value, lang: &str) -> Option<String> {
+    let stamp = spec.get("content_hash")?;
+    let (what, hash) = (str_at(stamp, "algorithm").trim(), str_at(stamp, "hash").trim());
+    if what.is_empty() || hash.is_empty() {
+        return None;
+    }
+    Some(crate::catalog().tr(lang, "doc.content_hash").replace("{what}", what).replace("{hash}", hash))
+}
+
 pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
     // The language travels in the spec rather than in this signature: the
     // document's own lines — the fallback title, and the footer every page is
@@ -290,6 +334,7 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
         p: palette,
         footer: footer_line(lang, generated),
         signer: signer_line(spec, lang),
+        content_hash: hash_line(spec, lang),
     };
 
     let mut doc = Pdf::new(font, title, t("doc.producer").replace("{generated}", generated));
@@ -381,7 +426,7 @@ pub fn render(spec: &Value, font: &'static Font, generated: &str) -> Rendered {
         let heading = str_at(section, "heading");
         // A heading with no room under it for a row belongs on the next page,
         // not stranded at the bottom of this one.
-        if y + 40.0 > body_bottom() {
+        if y + 40.0 > body_bottom(&chrome) {
             pages.push(std::mem::take(&mut page));
             y = masthead(&mut page, font, &chrome);
         }
@@ -488,7 +533,7 @@ fn table(
         let lines = cells.iter().map(Vec::len).max().unwrap_or(1);
         let height = row_h + (lines - 1) as f32 * (size + 2.0);
 
-        if y + height > body_bottom() {
+        if y + height > body_bottom(chrome) {
             pages.push(std::mem::take(page));
             let top = masthead(page, font, chrome);
             y = header(page, top);
@@ -617,6 +662,9 @@ fn note_everything(doc: &mut Pdf, spec: &Value, chrome: &Chrome) {
     doc.note_text(&chrome.footer);
     if let Some(signer) = &chrome.signer {
         doc.note_text(signer);
+    }
+    if let Some(hash) = &chrome.content_hash {
+        doc.note_text(hash);
     }
     doc.note_text("BARRACUDA TEAM LIMEN 0123456789 / …");
     for line in arr_at(spec, "summary") {

@@ -36,6 +36,7 @@ mod pdf;
 mod save;
 mod sign;
 mod spec;
+mod stamp;
 mod view;
 
 #[cfg(test)]
@@ -45,6 +46,7 @@ pub(crate) use handler::*;
 pub(crate) use save::*;
 pub(crate) use sign::*;
 pub(crate) use spec::*;
+pub(crate) use stamp::*;
 pub(crate) use view::*;
 
 pub(crate) use std::time::{SystemTime, UNIX_EPOCH};

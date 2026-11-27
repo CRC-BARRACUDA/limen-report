@@ -37,6 +37,8 @@ pub(crate) fn canonical(spec: &Value, lang: &str, signer: Option<&limen_sdk_rust
         o.insert("theme".into(), Value::String(ground_of(spec).into()));
         o.insert("lang".into(), Value::String(lang.to_string()));
         o.remove("signer");
+        // Likewise a content hash: this module works it out, or there is none.
+        o.remove("content_hash");
         if let Some(id) = signer {
             o.insert(
                 "signer".into(),
