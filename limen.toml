@@ -11,6 +11,12 @@ repo = "CRC-BARRACUDA/limen-report"
 [provides]
 capabilities = ["report.build"]
 
+# Optional: with a hash provider installed — the hash-checker module — the
+# preview offers to stamp what is saved: the hash of the report's content at
+# the foot of every page, and the file's own hash beside it.
+[optional.capabilities]
+"hash.calc" = ">=0.1"
+
 [permissions]
 # Writes a report where the user chose to put it. `<user-selected>` is a file
 # the operating system's own save dialog returned — this module cannot name a

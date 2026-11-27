@@ -72,8 +72,18 @@ pub(crate) fn build(spec: &Value, host: &Host, lang: &str) -> Value {
             Some(font) => {
                 // One moment for the whole document, signed or not.
                 let now = today();
+                // The hash of what it says is settled before there is a page to
+                // print it on: of the content, which no choice below changes.
+                let stamp = match hashing_choice(spec, &hash_options(host)) {
+                    Hashing::No => None,
+                    Hashing::With(option) => Some(
+                        hash_of_text(host, &option, &content_text(spec)).map(|hash| Stamp { option, hash }),
+                    ),
+                    Hashing::Gone(said) => Some(Err(catalog().tr(lang, "save.hash_gone").replace("{what}", &said))),
+                };
+                let content_hash = stamp.as_ref().and_then(|s| s.as_ref().ok());
                 let render = |signer: Option<&limen_sdk_rust::GpgIdentity>| {
-                    pdf::layout::render(&canonical(spec, lang, signer), font, &now).bytes
+                    pdf::layout::render(&stamped(canonical(spec, lang, signer), content_hash), font, &now).bytes
                 };
                 // As whom it will be signed is settled first: every page names
                 // them, and the pages are what is signed.
@@ -89,7 +99,7 @@ pub(crate) fn build(spec: &Value, host: &Host, lang: &str) -> Value {
                         _ => Some(Err(e.message)),
                     },
                 };
-                export_bytes(spec, host, "pdf", &render, signer, lang)
+                export_bytes(spec, host, "pdf", &render, signer, stamp.clone(), lang)
             }
             // The face is embedded in this library, so this cannot happen in a
             // build that shipped — but a report that silently came out as text
@@ -102,6 +112,7 @@ pub(crate) fn build(spec: &Value, host: &Host, lang: &str) -> Value {
         // "" | "view" | anything else → an in-app view the caller opens in a tab.
         // The ways there are to sign are asked for now, to offer them. An
         // older Limen, or one with no GnuPG: none to offer.
-        _ => render_view_with(spec, lang, &host.gpg_identities().unwrap_or_default()),
+        // And the algorithms to stamp it with, if a hash module is installed.
+        _ => render_view_full(spec, lang, &host.gpg_identities().unwrap_or_default(), &hash_options(host)),
     }
 }

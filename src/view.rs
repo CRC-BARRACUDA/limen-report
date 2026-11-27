@@ -18,6 +18,7 @@ pub(crate) fn export_row(
     spec: &Value,
     lang: &str,
     identities: &[limen_sdk_rust::GpgIdentity],
+    hashes: &[HashOption],
 ) -> Vec<limen_sdk_rust::ui::Widget> {
     let t = |k: &str| catalog().tr(lang, k);
     let Some(font) = pdf::font() else {
@@ -44,30 +45,52 @@ pub(crate) fn export_row(
         o.insert("format".into(), Value::String("pdf".into()));
         o.remove("theme");
         o.remove("sign");
+        o.remove("hash");
     }
+
+    // Three short rows rather than one long one. Side by side, the controls
+    // are wider than the pop-up as soon as a key's user id is a name and an
+    // address — and a row wider than the window it is in pushes the whole
+    // preview out past both edges, title and Close button with it.
+    let mut choices = vec![
+        // One control, because there is one thing left to decide. A report
+        // is a document; a page, a table of cells and a file of Markdown
+        // are the data behind one, and a module with data to hand over can
+        // hand it over itself.
+        select("theme", vec![t("preview.white"), t("preview.black")])
+            .label(t("preview.ground"))
+            .default(theme_label(spec, lang)),
+    ];
+    // Whether to stamp what is saved with a hash, and by which algorithm.
+    // Offered only when there is a module to do the arithmetic: a choice that
+    // can only fail is not a choice.
+    if !hashes.is_empty() {
+        choices.push(
+            select(
+                "hash",
+                std::iter::once(t("preview.hash_no")).chain(hashes.iter().map(|h| h.label.clone())).collect(),
+            )
+            .label(t("preview.hash"))
+            .default(t("preview.hash_no")),
+        );
+    }
+    // Whether to sign what is saved, and as whom: none, or one of the user's
+    // keys as one of its user ids. On a row of its own: it is as wide as the
+    // longest of them. Like the ground, it is the reader's to choose here, so
+    // it is not among the button's args.
+    let signature = select(
+        "sign",
+        std::iter::once(t("preview.sign_no")).chain(identities.iter().map(identity_label)).collect(),
+    )
+    .label(t("preview.sign"))
+    .default(t("preview.sign_no"));
 
     vec![
         label(t("preview.meta").replace("{sheets}", &sheets)).weak(),
+        row(choices),
+        row(vec![signature]),
         row(vec![
-            // One control, because there is one thing left to decide. A report
-            // is a document; a page, a table of cells and a file of Markdown
-            // are the data behind one, and a module with data to hand over can
-            // hand it over itself.
-            select("theme", vec![t("preview.white"), t("preview.black")])
-                .label(t("preview.ground"))
-                .default(theme_label(spec, lang)),
-            // Whether to sign what is saved, and as whom: none, or one of the
-            // user's keys as one of its user ids. Like the ground, it is the
-            // reader's to choose here, so it is not among the button's args.
-            select(
-                "sign",
-                std::iter::once(t("preview.sign_no")).chain(identities.iter().map(identity_label)).collect(),
-            )
-            .label(t("preview.sign"))
-            .default(t("preview.sign_no")),
-            button(t("preview.save"), "report.build", "build")
-                .primary()
-                .args(args),
+            button(t("preview.save"), "report.build", "build").primary().args(args),
             button(t("preview.close"), "report.build", "build").dismiss(),
         ]),
         separator(),
@@ -101,7 +124,19 @@ pub(crate) fn render_view(spec: &Value, lang: &str) -> Value {
 }
 
 /// [`render_view`], offering `identities` as the ways to sign what is saved.
+#[cfg(test)]
 pub(crate) fn render_view_with(spec: &Value, lang: &str, identities: &[limen_sdk_rust::GpgIdentity]) -> Value {
+    render_view_full(spec, lang, identities, &[])
+}
+
+/// [`render_view`], offering `identities` as the ways to sign what is saved
+/// and `hashes` as the algorithms to stamp it with.
+pub(crate) fn render_view_full(
+    spec: &Value,
+    lang: &str,
+    identities: &[limen_sdk_rust::GpgIdentity],
+    hashes: &[HashOption],
+) -> Value {
     let t = |k: &str| catalog().tr(lang, k);
     let title = {
         let t = str_at(spec, "title");
@@ -116,7 +151,7 @@ pub(crate) fn render_view_with(spec: &Value, lang: &str, identities: &[limen_sdk
     if !subtitle.is_empty() {
         w.push(label(subtitle).weak());
     }
-    w.extend(export_row(spec, lang, identities));
+    w.extend(export_row(spec, lang, identities, hashes));
     for line in arr_at(spec, "summary") {
         if let Some(s) = line.as_str() {
             w.push(label(s));

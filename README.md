@@ -95,6 +95,45 @@ say, from your own key, not for the module that asked for the report.
 Needs a Limen that has the `gpg` permission; on an older one the report is
 saved unsigned, and says so.
 
+## Stamping a report with a hash
+
+With a hash module installed — one that provides `hash.calc`, such as
+[`hash-checker`](https://github.com/CRC-BARRACUDA/limen-hash-checker) — the
+preview has a **Hash** choice too: *None*, or one of that module's algorithms
+(SHA-256, Kupyna and the rest). Without such a module the choice is not shown.
+With one picked, saving a report also:
+
+- prints the hash of the report's **content** at the foot of **every page**,
+  under the usual footer and the signer's line: the algorithm, and the hash
+  whole — a long one is set smaller, never cut short;
+- writes the hash of the **file** beside the PDF, in the same folder —
+  `report.pdf.sha256`, or `.kupyna256`, after the algorithm — as the one line
+  `sha256sum` prints, so the file can be checked with `sha256sum -c
+  report.pdf.sha256`.
+
+Two hashes, because one cannot do both jobs: a file cannot carry its own hash —
+writing it in changes the file. So the page carries the hash of what the report
+*says*, and the file's own hash sits beside it.
+
+**The content** is the report's title, subtitle, summary, charts and tables —
+and nothing of how it is printed. The same report on a white page and a black
+one, under any file name, signed or not, has the same content hash; change one
+cell and it has another. It is the hash of that content written as JSON, the
+keys of every object in order and no spaces, in UTF-8.
+
+The arithmetic is the hash module's, not this one's: it is asked for the hash of
+the content's text, and for the hash of the saved file.
+
+If the hash cannot be made — the module removed since the preview was opened —
+the report is still saved, the view says it is not stamped and why, and its
+pages carry no hash.
+
+A `content_hash` in a caller's spec is ignored: a hash printed on a document is
+a claim about it, and it is this module that works it out.
+
+A report can be both signed and stamped. The signature is over the finished
+file, hash line and all.
+
 ## Capability
 
 `report.build` — method **`build(spec)`**:

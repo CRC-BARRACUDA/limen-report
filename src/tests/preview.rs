@@ -37,13 +37,7 @@ fn the_view_is_a_pop_up_that_previews_the_document() {
 #[test]
 fn the_dropdown_owns_the_choice_of_ground() {
     let view = render_view(&spec(), "en");
-    let row = view["widgets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["kind"] == "row")
-        .expect("the controls");
-    let children = row["children"].as_array().unwrap();
+    let children = super::controls(&view);
 
     let picker = children
         .iter()
@@ -124,9 +118,8 @@ fn a_long_table_is_sampled_and_says_so() {
 #[test]
 fn close_just_closes() {
     let view = render_view(&spec(), "en");
-    let row = view["widgets"].as_array().unwrap()
-        .iter().find(|w| w["kind"] == "row").unwrap();
-    let close = row["children"].as_array().unwrap().last().unwrap();
+    let controls = super::controls(&view);
+    let close = controls.last().unwrap();
     assert_eq!(close["dismiss"], true, "{close}");
 }
 
@@ -151,10 +144,8 @@ fn the_page_count_is_the_real_one() {
 #[test]
 fn the_button_carries_the_whole_spec() {
     let view = render_view(&spec(), "en");
-    let widgets = view["widgets"].as_array().unwrap();
-    let row = widgets.iter().find(|w| w["kind"] == "row").expect("the export row");
-    let save = row["children"].as_array().unwrap()
-        .iter().find(|c| c["text"] == "Save").expect("the save button");
+    let controls = super::controls(&view);
+    let save = controls.iter().find(|c| c["text"] == "Save").expect("the save button");
     assert_eq!(save["action"]["capability"], "report.build");
     assert_eq!(save["action"]["method"], "build");
     // Every row travels with it — the ninety the preview trimmed to twelve
